@@ -36,25 +36,25 @@ class AdtsToMp4MuxerTest {
 
         val moovBytes = bytes.copyOfRange(ftyp.size, ftyp.size + moov.size)
         val mvhd = requireBox(moovBytes, "mvhd")
-        // version(1) + flags(3) + 4×4 + timescale(4) + duration(4)
-        assertEquals(44100L, readU32(mvhd, 12))
-        assertEquals(frames * 1024L, readU32(mvhd, 16))
+        // payload: version/flags(4) + creation(4) + modification(4) + timescale(4) + duration(4)
+        assertEquals(44100L, payloadU32(mvhd, 12))
+        assertEquals(frames * 1024L, payloadU32(mvhd, 16))
         val trak = requireBox(moovBytes, "trak")
         val mdia = requireBox(trak, "mdia")
         val mdhd = requireBox(mdia, "mdhd")
-        assertEquals(44100L, readU32(mdhd, 12))
-        assertEquals(frames * 1024L, readU32(mdhd, 16))
+        assertEquals(44100L, payloadU32(mdhd, 12))
+        assertEquals(frames * 1024L, payloadU32(mdhd, 16))
         val minf = requireBox(mdia, "minf")
         val stbl = requireBox(minf, "stbl")
         val stsz = requireBox(stbl, "stsz")
-        assertEquals(frames.toLong(), readU32(stsz, 8)) // version/flags + sample_size
+        assertEquals(frames.toLong(), payloadU32(stsz, 8)) // version/flags + sample_size
         val stts = requireBox(stbl, "stts")
-        assertEquals(1L, readU32(stts, 8)) // entry_count
-        assertEquals(frames.toLong(), readU32(stts, 12)) // sample_count
-        assertEquals(1024L, readU32(stts, 16)) // sample_delta
+        assertEquals(1L, payloadU32(stts, 4)) // version/flags(4) + entry_count
+        assertEquals(frames.toLong(), payloadU32(stts, 8)) // sample_count
+        assertEquals(1024L, payloadU32(stts, 12)) // sample_delta
         val stco = requireBox(stbl, "stco")
-        assertEquals(1L, readU32(stco, 8)) // entry_count
-        assertEquals(ftyp.size.toLong() + moov.size.toLong() + 8L, readU32(stco, 12))
+        assertEquals(1L, payloadU32(stco, 4)) // entry_count
+        assertEquals(ftyp.size.toLong() + moov.size.toLong() + 8L, payloadU32(stco, 8))
 
         // mdat 载荷即各帧的裸 AAC 数据
         val mdatPayload = bytes.copyOfRange(ftyp.size + moov.size + 8, bytes.size)
@@ -123,6 +123,9 @@ class AdtsToMp4MuxerTest {
         }
         throw AssertionError("missing box $type")
     }
+
+    /** [box] 为含 8 字节盒头的完整盒子，[payloadOffset] 相对盒内 payload 起点。 */
+    private fun payloadU32(box: ByteArray, payloadOffset: Int): Long = readU32(box, payloadOffset + 8)
 
     private fun readU32(bytes: ByteArray, offset: Int): Long {
         return ((bytes[offset].toLong() and 0xFF) shl 24) or

@@ -114,6 +114,8 @@ internal class SubtitleTranslationException(
     val retryAfterMs: Long? = null,
     /** 服务端以 413/431 拒绝了请求体：agent 循环应缩小窗口与历史后重试，而不是直接失败。 */
     val payloadTooLarge: Boolean = false,
+    /** 服务端以 429 拒绝：并发/速率受限，应遵医嘱退避（优先用 Retry-After）。 */
+    val rateLimited: Boolean = false,
     /** 413 响应体里解析出的「本次请求 token 数」（如 Groq 的 Requested 8010）。 */
     val requestedTokens: Int? = null,
     /** 413 响应体里解析出的「该端点/模型允许的最大 token 数」（如 Groq 的 Limit 8000）。 */
@@ -622,6 +624,7 @@ internal class SubtitleTranslationClient(
                         retryable = failure.retryable,
                         retryAfterMs = parseRetryAfterMillis(it.header("Retry-After")),
                         payloadTooLarge = failure.payloadTooLarge,
+                        rateLimited = it.code == 429,
                         requestedTokens = requestedTokens,
                         limitTokens = limitTokens
                     )

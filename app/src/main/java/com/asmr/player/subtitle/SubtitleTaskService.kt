@@ -263,7 +263,7 @@ internal class SubtitleTaskService : Service() {
         val selectedIds = SubtitleDispatchPolicy.selectTranslationItems(
             orderedCandidates = candidates.map(SubtitleTaskItemEntity::id),
             activeItemIds = translationJobs.filterValues(Job::isActive).keys,
-            concurrency = DEEPSEEK_TRANSLATION_CONCURRENCY
+            concurrency = translationConcurrencyFor(settingsRepository.loadCustomAiApiSettings().enabled)
         )
         val selected = candidates.filter { it.id in selectedIds }
         candidates.filterNot { it.id in selectedIds }.forEach { item ->
@@ -1079,7 +1079,8 @@ internal class SubtitleTaskService : Service() {
         if (item.state != SubtitleItemState.TRANSLATING) return
         val attempt = item.attempt + 1
         if (error.retryable && attempt < MAX_TRANSLATION_ATTEMPTS) {
-            val exponential = BASE_RETRY_DELAY_MS * (1L shl (attempt - 1))
+            val base = if (error.rateLimited) RATE_LIMIT_BACKOFF_MS else BASE_RETRY_DELAY_MS
+            val exponential = base * (1L shl (attempt - 1))
             val delayMs = maxOf(exponential, error.retryAfterMs ?: 0L) + Random.nextLong(0L, RETRY_JITTER_MS + 1L)
             dao.updateItem(
                 item.copy(
@@ -1380,6 +1381,7 @@ internal class SubtitleTaskService : Service() {
         private const val MAX_SCRIPT_FILE_CHARS = 200_000
         private const val MAX_SCRIPT_FILE_BYTES = 20L * 1024L * 1024L
         private const val BASE_RETRY_DELAY_MS = 1_000L
+        private const val RATE_LIMIT_BACKOFF_MS = 30_000L
         private const val RETRY_JITTER_MS = 250L
         private const val SCHEDULER_TICK_MS = 500L
         private const val TITLE_TRANSLATION_RETRY_BACKOFF_MS = 60_000L
