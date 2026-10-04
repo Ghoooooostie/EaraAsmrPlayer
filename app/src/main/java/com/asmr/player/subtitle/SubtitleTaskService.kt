@@ -33,6 +33,7 @@ import com.asmr.player.data.local.db.entities.SubtitleTranslationSourceEntity
 import com.asmr.player.data.local.db.entities.TrackEntity
 import com.asmr.player.data.local.db.entities.titleForDisplay
 import com.asmr.player.data.settings.SettingsRepository
+import com.asmr.player.data.settings.normalizeCustomAiApiUrl
 import com.asmr.player.di.DEEPSEEK_HTTP_CLIENT
 import com.asmr.player.domain.model.Track
 import com.asmr.player.ui.library.LocalTreeNode
@@ -1243,6 +1244,25 @@ internal class SubtitleTaskService : Service() {
     }
 
     private suspend fun requireTranslationClient(): SubtitleTranslationClient {
+        val customSettings = settingsRepository.loadCustomAiApiSettings()
+        if (customSettings.enabled) {
+            val apiKey = CustomAiApiKeyStore.get(applicationContext).read()
+            check(apiKey.isNotBlank()) { "请先在设置中配置自定义 AI API Key" }
+            val apiUrl = normalizeCustomAiApiUrl(customSettings.apiUrl)
+            val model = customSettings.model.trim()
+            check(apiUrl != null && model.isNotEmpty()) {
+                "自定义 AI API 端点或模型名无效，请在设置中检查（需为 https 的 …/chat/completions 地址）"
+            }
+            return SubtitleTranslationClient(
+                okHttpClient = deepSeekOkHttpClient,
+                gson = gson,
+                apiKey = apiKey,
+                settings = settingsRepository.loadDeepSeekTranslationSettings(),
+                apiUrl = apiUrl,
+                model = model,
+                sendDeepSeekParams = customSettings.sendDeepSeekParams
+            )
+        }
         val apiKey = DeepSeekApiKeyStore.get(applicationContext).read()
         check(apiKey.isNotBlank()) { "请先在设置中配置 DeepSeek API Key" }
         deepSeekAccountRepository.bindApiKey(apiKey)

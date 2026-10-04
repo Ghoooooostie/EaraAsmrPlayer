@@ -12,7 +12,9 @@ import java.nio.charset.CodingErrorAction
 data class SubtitleEntry(
     val startMs: Long,
     val endMs: Long,
-    val text: String
+    val text: String,
+    /** 自动生成的字幕同时保存日文原文；外挂字幕为空。 */
+    val japaneseText: String = ""
 )
 
 object SubtitleParser {

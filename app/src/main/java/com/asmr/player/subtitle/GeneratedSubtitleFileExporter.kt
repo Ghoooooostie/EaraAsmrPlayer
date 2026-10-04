@@ -4,15 +4,23 @@ import android.content.Context
 import android.net.Uri
 import android.provider.DocumentsContract
 import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.stringPreferencesKey
 import com.asmr.player.data.local.db.AppDatabase
 import com.asmr.player.data.local.db.entities.SubtitleEntity
 import com.asmr.player.data.remote.download.DownloadStorageGateway
 import com.asmr.player.data.settings.SettingsKeys
 import com.asmr.player.data.settings.settingsDataStore
+import com.asmr.player.util.SUBTITLE_BILINGUAL_ORDER_PREF_KEY
+import com.asmr.player.util.SUBTITLE_DISPLAY_MODE_PREF_KEY
+import com.asmr.player.util.SubtitleBilingualOrder
+import com.asmr.player.util.SubtitleDisplayMode
+import com.asmr.player.util.SubtitleEntry
+import com.asmr.player.util.displayText
 import java.io.File
 import java.util.Locale
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.yield
 
@@ -51,10 +59,26 @@ internal class GeneratedSubtitleFileExporter(
             name = target.fileName,
             mimeType = LRC_MIME_TYPE
         )
+        val displayMode = readSubtitleDisplayMode()
+        val bilingualOrder = readSubtitleBilingualOrder()
         storage.openOutput(reference).buffered().use { output ->
-            output.write(renderChineseLrc(subtitles).toByteArray(Charsets.UTF_8))
+            output.write(renderSubtitleLrc(subtitles, displayMode, bilingualOrder).toByteArray(Charsets.UTF_8))
         }
         GeneratedSubtitleExportResult.Exported(reference)
+    }
+
+    private suspend fun readSubtitleDisplayMode(): SubtitleDisplayMode {
+        val key = stringPreferencesKey(SUBTITLE_DISPLAY_MODE_PREF_KEY)
+        return context.settingsDataStore.data
+            .map { prefs -> SubtitleDisplayMode.fromStorageValue(prefs[key]) }
+            .first()
+    }
+
+    private suspend fun readSubtitleBilingualOrder(): SubtitleBilingualOrder {
+        val key = stringPreferencesKey(SUBTITLE_BILINGUAL_ORDER_PREF_KEY)
+        return context.settingsDataStore.data
+            .map { prefs -> SubtitleBilingualOrder.fromStorageValue(prefs[key]) }
+            .first()
     }
 
     private fun resolveTarget(trackPath: String): SubtitleExportTarget? {
@@ -165,6 +189,25 @@ internal fun subtitleFileName(audioFileName: String): String {
     val baseName = normalized.substringBeforeLast('.', missingDelimiterValue = normalized)
         .ifBlank { normalized }
     return "$baseName.lrc"
+}
+
+/** 按当前字幕显示模式导出：中文模式与旧版本一致，双语模式写入同一时间戳的两行。 */
+internal fun renderSubtitleLrc(
+    subtitles: List<SubtitleEntity>,
+    mode: SubtitleDisplayMode,
+    bilingualOrder: SubtitleBilingualOrder
+): String {
+    val lines = subtitles.flatMap { subtitle ->
+        val text = SubtitleEntry(
+            startMs = subtitle.startMs,
+            endMs = subtitle.endMs,
+            text = subtitle.text,
+            japaneseText = subtitle.japaneseText
+        ).displayText(mode, bilingualOrder)
+        normalizeLrcText(text)
+            .map { line -> "[${formatLrcTime(subtitle.startMs)}]$line" }
+    }
+    return if (lines.isEmpty()) "" else lines.joinToString(separator = "\r\n", postfix = "\r\n")
 }
 
 internal fun renderChineseLrc(subtitles: List<SubtitleEntity>): String {

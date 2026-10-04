@@ -88,6 +88,7 @@ import com.asmr.player.cache.AppCacheLimits
 import com.asmr.player.cache.AppCacheState
 import com.asmr.player.data.remote.download.DownloadDestination
 import com.asmr.player.data.settings.CoverPreviewMode
+import com.asmr.player.data.settings.CustomAiApiSettings
 import com.asmr.player.data.settings.DeepSeekReasoningEffort
 import com.asmr.player.data.settings.DeepSeekTranslationSettings
 import com.asmr.player.data.settings.FloatingLyricsSettings
@@ -120,6 +121,8 @@ import com.asmr.player.ui.common.withAddedBottomPadding
 import com.asmr.player.ui.common.collectAsStateWhileActive
 import com.asmr.player.ui.update.launchDownloadedApkInstall
 import com.asmr.player.util.Formatting
+import com.asmr.player.util.SubtitleBilingualOrder
+import com.asmr.player.util.SubtitleDisplayMode
 import java.io.File
 import kotlin.math.abs
 import kotlin.math.roundToInt
@@ -140,7 +143,7 @@ private enum class SettingsSection(
     Appearance("外观", "调整主题、主题色与播放页背景", Icons.Rounded.Palette),
     Playback("播放设置", "管理迷你播放栏、音频输出与淡入淡出", Icons.Rounded.Headphones),
     Lyrics("歌词", "配置歌词页与悬浮歌词的显示效果", Icons.Rounded.Lyrics),
-    Translation("翻译配置", "管理页面翻译、字幕模型与 DeepSeek 翻译", Icons.Rounded.Translate),
+    Translation("翻译配置", "管理页面翻译、字幕模型与 AI 翻译", Icons.Rounded.Translate),
     SupportStatus("服务状态与代理", "测试服务连通性并配置代理与 DNS", Icons.Rounded.Router),
     AppCache("APP 缓存", "设置缓存容量上限并清理缓存", Icons.Rounded.Storage),
     About("关于", "查看版本信息并检查应用更新", Icons.Rounded.Info),
@@ -196,6 +199,8 @@ fun SettingsScreen(
     LaunchedEffect(translationDataActive, viewModel) {
         if (translationDataActive) viewModel.prepareSettingsData()
     }
+    val subtitleDisplayMode by viewModel.subtitleDisplayMode.collectAsStateWhileActive(lyricsDataActive)
+    val subtitleBilingualOrder by viewModel.subtitleBilingualOrder.collectAsStateWhileActive(lyricsDataActive)
     val floatingLyricsEnabled by viewModel.floatingLyricsEnabled.collectAsStateWhileActive(lyricsDataActive)
     val floatingSettings by viewModel.floatingLyricsSettings.collectAsStateWhileActive(lyricsDataActive)
     val nowPlayingLyricsSettings by viewModel.nowPlayingLyricsSettings.collectAsStateWhileActive(lyricsDataActive)
@@ -221,6 +226,11 @@ fun SettingsScreen(
     val deepSeekApiKeyState by viewModel.deepSeekApiKeyState.collectAsStateWhileActive(translationDataActive)
     val deepSeekAccountState by viewModel.deepSeekAccountState.collectAsStateWhileActive(translationDataActive)
     val deepSeekTranslationSettings by viewModel.deepSeekTranslationSettings.collectAsStateWhileActive(translationDataActive)
+    val customAiApiSettings by viewModel.customAiApiSettings.collectAsStateWhileActive(translationDataActive)
+    val customAiApiEndpointState by viewModel.customAiApiEndpointState.collectAsStateWhileActive(translationDataActive)
+    val customAiApiKeyState by viewModel.customAiApiKeyState.collectAsStateWhileActive(translationDataActive)
+    val translationApiTestState by viewModel.translationApiTestState.collectAsStateWhileActive(translationDataActive)
+    val customAiApiModelsState by viewModel.customAiApiModelsState.collectAsStateWhileActive(translationDataActive)
     val updateState by viewModel.updateState.collectAsStateWhileActive(aboutDataActive)
     val autoUpdateCheckEnabled by viewModel.autoUpdateCheckEnabled.collectAsStateWhileActive(aboutDataActive)
     val scanRoots by libraryViewModel.scanRoots.collectAsStateWhileActive(localLibraryDataActive)
@@ -266,6 +276,18 @@ fun SettingsScreen(
     var deepSeekApiKeyInput by remember { mutableStateOf("") }
     LaunchedEffect(deepSeekApiKeyState.saveVersion) {
         if (deepSeekApiKeyState.saveVersion > 0L) deepSeekApiKeyInput = ""
+    }
+    var customAiApiUrlInput by remember { mutableStateOf("") }
+    var customAiApiModelInput by remember { mutableStateOf("") }
+    var customAiApiKeyInput by remember { mutableStateOf("") }
+    LaunchedEffect(customAiApiEndpointState.saveVersion) {
+        if (customAiApiEndpointState.saveVersion > 0L) {
+            customAiApiUrlInput = ""
+            customAiApiModelInput = ""
+        }
+    }
+    LaunchedEffect(customAiApiKeyState.saveVersion) {
+        if (customAiApiKeyState.saveVersion > 0L) customAiApiKeyInput = ""
     }
     DisposableEffect(onHorizontalControlInteractionChanged) {
         onDispose { onHorizontalControlInteractionChanged(false) }
@@ -860,6 +882,16 @@ fun SettingsScreen(
                 if (currentSection == SettingsSection.Lyrics) {
                     item(key = "group:lyrics") {
                         SettingsDetailCard {
+                            SubtitleDisplayModeSection(
+                                mode = subtitleDisplayMode,
+                                bilingualOrder = subtitleBilingualOrder,
+                                segmentedButtonColors = segmentedButtonColors,
+                                onModeChange = viewModel::setSubtitleDisplayMode,
+                                onBilingualOrderChange = viewModel::setSubtitleBilingualOrder
+                            )
+
+                            HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.18f))
+
                             SettingsToggleRow(
                                 text = "开启悬浮歌词",
                                 checked = floatingLyricsEnabled,
@@ -1019,21 +1051,116 @@ fun SettingsScreen(
                             onClearFailure = viewModel::clearSubtitleModelFailure
                         )
                         HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.14f))
-                        DeepSeekTranslationSettingsSection(
-                            state = deepSeekApiKeyState,
-                            accountState = deepSeekAccountState,
-                            settings = deepSeekTranslationSettings,
-                            apiKeyInput = deepSeekApiKeyInput,
-                            compact = isCompact,
-                            segmentedButtonColors = segmentedButtonColors,
-                            onApiKeyInputChanged = { deepSeekApiKeyInput = it },
-                            onSave = { viewModel.saveDeepSeekApiKey(deepSeekApiKeyInput) },
-                            onThinkingEnabledChanged = viewModel::setDeepSeekThinkingEnabled,
-                            onReasoningEffortChanged = viewModel::setDeepSeekReasoningEffort,
-                            onFinalPolishEnabledChanged = viewModel::setDeepSeekFinalPolishEnabled,
-                            activeTipKey = activeTipKey,
-                            onToggleTip = { key -> activeTipKey = if (activeTipKey == key) null else key }
-                        )
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            Text(
+                                text = "翻译服务",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = colorScheme.textPrimary
+                            )
+                            Spacer(modifier = Modifier.weight(1f))
+                            SingleChoiceSegmentedButtonRow(
+                                modifier = Modifier
+                                    .widthIn(max = 220.dp)
+                                    .testTag("translation_api_source")
+                            ) {
+                                SegmentedButton(
+                                    selected = !customAiApiSettings.enabled,
+                                    onClick = { viewModel.setCustomAiApiEnabled(false) },
+                                    shape = SegmentedButtonDefaults.itemShape(index = 0, count = 2),
+                                    colors = segmentedButtonColors,
+                                    icon = {},
+                                    label = { Text("DeepSeek") }
+                                )
+                                SegmentedButton(
+                                    selected = customAiApiSettings.enabled,
+                                    onClick = { viewModel.setCustomAiApiEnabled(true) },
+                                    shape = SegmentedButtonDefaults.itemShape(index = 1, count = 2),
+                                    colors = segmentedButtonColors,
+                                    icon = {},
+                                    label = { Text("自定义 AI") }
+                                )
+                            }
+                        }
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(12.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            FilledTonalButton(
+                                onClick = viewModel::testTranslationApi,
+                                enabled = !translationApiTestState.running,
+                                modifier = Modifier
+                                    .height(40.dp)
+                                    .testTag("translation_api_test_action"),
+                                colors = settingsPrimaryTonalButtonColors(),
+                                shape = RoundedCornerShape(14.dp)
+                            ) {
+                                if (translationApiTestState.running) {
+                                    EaraLogoLoadingIndicator(size = 16.dp)
+                                } else {
+                                    Text("测试连通性")
+                                }
+                            }
+                            translationApiTestState.resultMessage?.let { message ->
+                                Text(
+                                    text = message,
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = if (translationApiTestState.success) {
+                                        MaterialTheme.colorScheme.primary
+                                    } else {
+                                        MaterialTheme.colorScheme.error
+                                    },
+                                    modifier = Modifier.testTag("translation_api_test_result")
+                                )
+                            }
+                        }
+                        if (customAiApiSettings.enabled) {
+                            CustomAiApiSettingsSection(
+                                settings = customAiApiSettings,
+                                endpointState = customAiApiEndpointState,
+                                keyState = customAiApiKeyState,
+                                urlInput = customAiApiUrlInput,
+                                modelInput = customAiApiModelInput,
+                                apiKeyInput = customAiApiKeyInput,
+                                finalPolishEnabled = deepSeekTranslationSettings.finalPolishEnabled,
+                                compact = isCompact,
+                                modelsLoading = customAiApiModelsState.loading,
+                                models = customAiApiModelsState.models,
+                                modelsError = customAiApiModelsState.error,
+                                onUrlInputChanged = { customAiApiUrlInput = it },
+                                onModelInputChanged = { customAiApiModelInput = it },
+                                onApiKeyInputChanged = { customAiApiKeyInput = it },
+                                onSaveEndpoint = {
+                                    viewModel.saveCustomAiApiEndpoint(customAiApiUrlInput, customAiApiModelInput)
+                                },
+                                onSaveApiKey = { viewModel.saveCustomAiApiKey(customAiApiKeyInput) },
+                                onRefreshModels = viewModel::refreshCustomAiApiModels,
+                                onSendDeepSeekParamsChanged = viewModel::setCustomAiSendDeepSeekParams,
+                                onFinalPolishEnabledChanged = viewModel::setDeepSeekFinalPolishEnabled,
+                                activeTipKey = activeTipKey,
+                                onToggleTip = { key -> activeTipKey = if (activeTipKey == key) null else key }
+                            )
+                        } else {
+                            DeepSeekTranslationSettingsSection(
+                                state = deepSeekApiKeyState,
+                                accountState = deepSeekAccountState,
+                                settings = deepSeekTranslationSettings,
+                                apiKeyInput = deepSeekApiKeyInput,
+                                compact = isCompact,
+                                segmentedButtonColors = segmentedButtonColors,
+                                onApiKeyInputChanged = { deepSeekApiKeyInput = it },
+                                onSave = { viewModel.saveDeepSeekApiKey(deepSeekApiKeyInput) },
+                                onThinkingEnabledChanged = viewModel::setDeepSeekThinkingEnabled,
+                                onReasoningEffortChanged = viewModel::setDeepSeekReasoningEffort,
+                                onFinalPolishEnabledChanged = viewModel::setDeepSeekFinalPolishEnabled,
+                                activeTipKey = activeTipKey,
+                                onToggleTip = { key -> activeTipKey = if (activeTipKey == key) null else key }
+                            )
+                        }
                     }
                 }
                 }
@@ -1266,6 +1393,83 @@ fun SettingsScreen(
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun SubtitleDisplayModeSection(
+    mode: SubtitleDisplayMode,
+    bilingualOrder: SubtitleBilingualOrder,
+    segmentedButtonColors: SegmentedButtonColors,
+    onModeChange: (SubtitleDisplayMode) -> Unit,
+    onBilingualOrderChange: (SubtitleBilingualOrder) -> Unit
+) {
+    Text("字幕显示", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text("显示文本", style = MaterialTheme.typography.bodyMedium)
+        Spacer(modifier = Modifier.weight(1f))
+        SingleChoiceSegmentedButtonRow {
+            SegmentedButton(
+                selected = mode == SubtitleDisplayMode.CHINESE,
+                onClick = { onModeChange(SubtitleDisplayMode.CHINESE) },
+                shape = SegmentedButtonDefaults.itemShape(index = 0, count = 3),
+                colors = segmentedButtonColors,
+                icon = {},
+                label = { Text("中文") }
+            )
+            SegmentedButton(
+                selected = mode == SubtitleDisplayMode.JAPANESE,
+                onClick = { onModeChange(SubtitleDisplayMode.JAPANESE) },
+                shape = SegmentedButtonDefaults.itemShape(index = 1, count = 3),
+                colors = segmentedButtonColors,
+                icon = {},
+                label = { Text("日文") }
+            )
+            SegmentedButton(
+                selected = mode == SubtitleDisplayMode.BILINGUAL,
+                onClick = { onModeChange(SubtitleDisplayMode.BILINGUAL) },
+                shape = SegmentedButtonDefaults.itemShape(index = 2, count = 3),
+                colors = segmentedButtonColors,
+                icon = {},
+                label = { Text("双语") }
+            )
+        }
+    }
+    if (mode == SubtitleDisplayMode.BILINGUAL) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text("双语顺序", style = MaterialTheme.typography.bodyMedium)
+            Spacer(modifier = Modifier.weight(1f))
+            SingleChoiceSegmentedButtonRow {
+                SegmentedButton(
+                    selected = bilingualOrder == SubtitleBilingualOrder.JAPANESE_FIRST,
+                    onClick = { onBilingualOrderChange(SubtitleBilingualOrder.JAPANESE_FIRST) },
+                    shape = SegmentedButtonDefaults.itemShape(index = 0, count = 2),
+                    colors = segmentedButtonColors,
+                    icon = {},
+                    label = { Text("日语在上") }
+                )
+                SegmentedButton(
+                    selected = bilingualOrder == SubtitleBilingualOrder.CHINESE_FIRST,
+                    onClick = { onBilingualOrderChange(SubtitleBilingualOrder.CHINESE_FIRST) },
+                    shape = SegmentedButtonDefaults.itemShape(index = 1, count = 2),
+                    colors = segmentedButtonColors,
+                    icon = {},
+                    label = { Text("中文在上") }
+                )
+            }
+        }
+    }
+    Text(
+        text = "自动生成的中文字幕同时保存日文原文。播放页、歌词页、悬浮歌词与导出的 LRC 都使用同一种文本；外挂字幕没有日文原文时保持原样。",
+        style = MaterialTheme.typography.bodySmall,
+        color = AsmrTheme.colorScheme.textSecondary
+    )
+}
+
 @Composable
 private fun NowPlayingLyricsSettingsSection(
     settings: NowPlayingLyricsSettings,
@@ -1468,6 +1672,227 @@ internal fun DeepSeekTranslationSettingsSection(
         infoText = "翻译完成后，可在任务管理中左滑作品卡片，对现有中文字幕进行整体润色。此操作会额外消耗 Token。",
         activeTipKey = activeTipKey,
         onToggleTip = onToggleTip
+    )
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+internal fun CustomAiApiSettingsSection(
+    settings: CustomAiApiSettings,
+    endpointState: DeepSeekApiKeyUiState,
+    keyState: DeepSeekApiKeyUiState,
+    urlInput: String,
+    modelInput: String,
+    apiKeyInput: String,
+    finalPolishEnabled: Boolean,
+    compact: Boolean,
+    modelsLoading: Boolean,
+    models: List<String>,
+    modelsError: String?,
+    onUrlInputChanged: (String) -> Unit,
+    onModelInputChanged: (String) -> Unit,
+    onApiKeyInputChanged: (String) -> Unit,
+    onSaveEndpoint: () -> Unit,
+    onSaveApiKey: () -> Unit,
+    onRefreshModels: () -> Unit,
+    onSendDeepSeekParamsChanged: (Boolean) -> Unit,
+    onFinalPolishEnabledChanged: (Boolean) -> Unit,
+    activeTipKey: String? = null,
+    onToggleTip: ((String) -> Unit)? = null
+) {
+    val colorScheme = AsmrTheme.colorScheme
+    val actionButtonColors = settingsPrimaryTonalButtonColors()
+    // weight 只能在 RowScope 内解析;延迟到各 Row 内部再计算宽度修饰符。
+    val inputWidthModifier: @Composable androidx.compose.foundation.layout.RowScope.() -> Modifier = {
+        if (compact) Modifier.weight(1f) else Modifier.widthIn(max = 320.dp)
+    }
+
+    Text(
+        text = "兼容 OpenAI chat/completions 协议；模型需支持工具调用（function calling）。",
+        style = MaterialTheme.typography.bodySmall,
+        color = colorScheme.textSecondary
+    )
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        OutlinedTextField(
+            value = urlInput,
+            onValueChange = onUrlInputChanged,
+            modifier = inputWidthModifier()
+                .height(48.dp)
+                .testTag("custom_ai_api_url_input"),
+            placeholder = {
+                Text(
+                    text = settings.apiUrl.ifBlank { "端点地址（…/chat/completions）" },
+                    style = MaterialTheme.typography.bodySmall
+                )
+            },
+            singleLine = true,
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
+            enabled = !endpointState.saving
+        )
+    }
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        OutlinedTextField(
+            value = modelInput,
+            onValueChange = onModelInputChanged,
+            modifier = inputWidthModifier()
+                .height(48.dp)
+                .testTag("custom_ai_api_model_input"),
+            placeholder = {
+                Text(
+                    text = settings.model.ifBlank { "模型名（如 gpt-4o-mini）" },
+                    style = MaterialTheme.typography.bodySmall
+                )
+            },
+            singleLine = true,
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Ascii),
+            enabled = !endpointState.saving,
+            isError = endpointState.errorMessage != null
+        )
+        FilledTonalButton(
+            onClick = onSaveEndpoint,
+            enabled = urlInput.isNotBlank() && modelInput.isNotBlank() && !endpointState.saving,
+            modifier = Modifier
+                .height(48.dp)
+                .testTag("custom_ai_api_endpoint_action"),
+            colors = actionButtonColors,
+            shape = RoundedCornerShape(14.dp)
+        ) {
+            if (endpointState.saving) {
+                EaraLogoLoadingIndicator(size = 18.dp)
+            } else {
+                Text(if (endpointState.configured) "更新" else "保存")
+            }
+        }
+    }
+    endpointState.errorMessage?.let { message ->
+        Text(
+            text = message,
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.error
+        )
+    }
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        FilledTonalButton(
+            onClick = onRefreshModels,
+            enabled = !modelsLoading && settings.apiUrl.isNotBlank(),
+            modifier = Modifier
+                .height(48.dp)
+                .testTag("custom_ai_models_refresh"),
+            colors = actionButtonColors,
+            shape = RoundedCornerShape(14.dp)
+        ) {
+            if (modelsLoading) {
+                EaraLogoLoadingIndicator(size = 18.dp)
+            } else {
+                Text("刷新模型列表")
+            }
+        }
+        Text(
+            text = when {
+                modelsLoading && models.isEmpty() -> "正在获取模型列表…"
+                models.isNotEmpty() -> "已获取 ${models.size} 个模型"
+                else -> ""
+            },
+            style = MaterialTheme.typography.bodySmall,
+            color = colorScheme.textSecondary
+        )
+    }
+    modelsError?.let { message ->
+        Text(
+            text = message,
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.error,
+            modifier = Modifier.testTag("custom_ai_models_error")
+        )
+    }
+    if (models.isNotEmpty()) {
+        FlowRow(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            models.forEach { modelId ->
+                ThemeModeChip(
+                    label = modelId,
+                    selected = modelId == modelInput.trim() || modelId == settings.model,
+                    onClick = { onModelInputChanged(modelId) }
+                )
+            }
+        }
+    }
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        OutlinedTextField(
+            value = apiKeyInput,
+            onValueChange = onApiKeyInputChanged,
+            modifier = inputWidthModifier()
+                .height(48.dp)
+                .testTag("custom_ai_api_key_input"),
+            placeholder = {
+                Text(
+                    text = "API Key",
+                    style = MaterialTheme.typography.bodySmall
+                )
+            },
+            singleLine = true,
+            visualTransformation = PasswordVisualTransformation(),
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+            enabled = !keyState.saving,
+            isError = keyState.errorMessage != null
+        )
+        FilledTonalButton(
+            onClick = onSaveApiKey,
+            enabled = apiKeyInput.isNotBlank() && !keyState.saving,
+            modifier = Modifier
+                .height(48.dp)
+                .testTag("custom_ai_api_key_action"),
+            colors = actionButtonColors,
+            shape = RoundedCornerShape(14.dp)
+        ) {
+            if (keyState.saving) {
+                EaraLogoLoadingIndicator(size = 18.dp)
+            } else {
+                Text(if (keyState.configured) "替换" else "保存")
+            }
+        }
+    }
+    keyState.errorMessage?.let { message ->
+        Text(
+            text = message,
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.error
+        )
+    }
+
+    SettingsToggleRow(
+        text = "发送 DeepSeek 专属参数",
+        checked = settings.sendDeepSeekParams,
+        onCheckedChange = onSendDeepSeekParamsChanged,
+        infoKey = "custom_ai_deepseek_params",
+        infoTitle = "发送 DeepSeek 专属参数",
+        infoText = "开启后请求中会附带 thinking、reasoning_effort 等 DeepSeek 特有字段。若服务端不支持这些字段（如 OpenAI、通义或本地模型），请保持关闭。",
+        activeTipKey = activeTipKey,
+        onToggleTip = onToggleTip
+    )
+
+    SettingsToggleRow(
+        text = "最终润色",
+        checked = finalPolishEnabled,
+        onCheckedChange = onFinalPolishEnabledChanged
     )
 }
 

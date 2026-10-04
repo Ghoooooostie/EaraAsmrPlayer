@@ -35,7 +35,19 @@ class SubtitleTranslationClientTest {
                 """{"error":{"message":"Thinking mode does not support this tool_choice"}}"""
             )
         )
-        assertNull(parseDeepSeekErrorMessage("not-json"))
+        assertEquals(
+            "404. That's an error.",
+            parseDeepSeekErrorMessage("404. That's an error.")
+        )
+        assertEquals(
+            "<html><body>Error: NOT_FOUND</body></html>",
+            parseDeepSeekErrorMessage("<html><body>Error: NOT_FOUND</body></html>")
+        )
+        assertNull(parseDeepSeekErrorMessage("   "))
+        assertEquals(
+            "x".repeat(300),
+            parseDeepSeekErrorMessage("x".repeat(500))
+        )
     }
 
     @Test
@@ -422,6 +434,83 @@ class SubtitleTranslationClientTest {
         assertEquals("max", maxRequest.get("reasoning_effort").asString)
         assertEquals("disabled", disabledRequest.getAsJsonObject("thinking").get("type").asString)
         assertEquals(false, disabledRequest.has("reasoning_effort"))
+    }
+
+    @Test
+    fun agentRequest_usesConfiguredModelWhenPresented() {
+        val request = JsonParser.parseString(
+            buildDeepSeekSubtitleAgentRequest(
+                gson = Gson(),
+                messages = listOf(DeepSeekChatMessage(role = "user", content = "hi")),
+                model = "kimi-k2"
+            )
+        ).asJsonObject
+
+        assertEquals("kimi-k2", request.get("model").asString)
+    }
+
+    @Test
+    fun requests_omitDeepSeekOnlyParamsWhenCompatibilityDisabled() {
+        val gson = Gson()
+        val messages = listOf(DeepSeekChatMessage(role = "user", content = "hi"))
+        val settings = DeepSeekTranslationSettings(thinkingEnabled = true)
+
+        val agentRequest = JsonParser.parseString(
+            buildDeepSeekSubtitleAgentRequest(
+                gson = gson,
+                messages = messages,
+                settings = settings,
+                model = "custom-model",
+                sendDeepSeekParams = false
+            )
+        ).asJsonObject
+        val polishRequest = JsonParser.parseString(
+            buildPolishAgentRequest(
+                gson = gson,
+                messages = messages,
+                settings = settings,
+                model = "custom-model",
+                sendDeepSeekParams = false
+            )
+        ).asJsonObject
+        val titleRequest = JsonParser.parseString(
+            buildDeepSeekTitleTranslationRequest(
+                gson = gson,
+                albumTitle = "テスト",
+                circle = "",
+                cv = "",
+                trackTitles = listOf(1L to "トラック"),
+                settings = settings,
+                model = "custom-model",
+                sendDeepSeekParams = false
+            )
+        ).asJsonObject
+
+        for (request in listOf(agentRequest, polishRequest, titleRequest)) {
+            assertEquals("custom-model", request.get("model").asString)
+            assertEquals(false, request.has("thinking"))
+            assertEquals(false, request.has("reasoning_effort"))
+            assertEquals(false, request.has("response_format"))
+        }
+        assertEquals(true, agentRequest.has("tools"))
+        assertEquals(true, polishRequest.has("tools"))
+    }
+
+    @Test
+    fun requests_keepDeepSeekOnlyParamsByDefault() {
+        val request = JsonParser.parseString(
+            buildDeepSeekTitleTranslationRequest(
+                gson = Gson(),
+                albumTitle = "テスト",
+                circle = "",
+                cv = "",
+                trackTitles = listOf(1L to "トラック")
+            )
+        ).asJsonObject
+
+        assertEquals(DEEPSEEK_SUBTITLE_MODEL, request.get("model").asString)
+        assertEquals(true, request.has("thinking"))
+        assertEquals(true, request.has("response_format"))
     }
 
     @Test

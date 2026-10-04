@@ -79,8 +79,11 @@ import com.asmr.player.playback.isRecoverableRemotePlaybackFailure
 import com.asmr.player.playback.capturePersistedPlaybackState
 import com.asmr.player.playback.spectrumVisualDelayMillis
 import com.asmr.player.util.EmbeddedMediaExtractor
+import com.asmr.player.util.SubtitleBilingualOrder
+import com.asmr.player.util.SubtitleDisplayMode
 import com.asmr.player.util.SubtitleEntry
 import com.asmr.player.util.SubtitleIndexFinder
+import com.asmr.player.util.displayText
 import dagger.hilt.android.AndroidEntryPoint
 import androidx.media3.datasource.TransferListener
 import androidx.media3.datasource.DataSpec
@@ -154,6 +157,8 @@ class PlaybackService : MediaSessionService() {
     private var lyricsIndexFinder: SubtitleIndexFinder? = null
     private var lastLyricIndex: Int = Int.MIN_VALUE
     private var floatingLyricsEnabled: Boolean = false
+    @Volatile private var subtitleDisplayMode: SubtitleDisplayMode = SubtitleDisplayMode.CHINESE
+    @Volatile private var subtitleBilingualOrder: SubtitleBilingualOrder = SubtitleBilingualOrder.JAPANESE_FIRST
     private var overlay: FloatingLyricsOverlay? = null
     private var pauseOnOutputDisconnectEnabled: Boolean = true
     private var resumeOnOutputConnectEnabled: Boolean = false
@@ -525,6 +530,18 @@ class PlaybackService : MediaSessionService() {
                 } else {
                     lastLyricIndex = Int.MIN_VALUE
                 }
+            }
+        }
+        serviceScope.launch {
+            settingsDataStore.subtitleDisplayMode.collect { mode ->
+                subtitleDisplayMode = mode
+                lastLyricIndex = Int.MIN_VALUE
+            }
+        }
+        serviceScope.launch {
+            settingsDataStore.subtitleBilingualOrder.collect { order ->
+                subtitleBilingualOrder = order
+                lastLyricIndex = Int.MIN_VALUE
             }
         }
         serviceScope.launch {
@@ -1271,7 +1288,7 @@ class PlaybackService : MediaSessionService() {
         if (idx != lastLyricIndex) {
             lastLyricIndex = idx
 
-            val current = lyrics.getOrNull(idx)?.text.orEmpty().ifBlank { " " }
+            val current = lyrics.getOrNull(idx)?.displayText(subtitleDisplayMode, subtitleBilingualOrder).orEmpty().ifBlank { " " }
             withContext(Dispatchers.Main.immediate) {
                 if (overlayNeeded) overlay?.updateLine(current, lyrics.getOrNull(idx))
             }

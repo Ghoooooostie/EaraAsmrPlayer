@@ -3,7 +3,6 @@ package com.asmr.player.subtitle
 import java.net.SocketTimeoutException
 import java.net.UnknownHostException
 import javax.net.ssl.SSLHandshakeException
-import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -84,10 +83,27 @@ class SubtitleFailureMessagesTest {
         val invalidKey = SubtitleFailureMessages.deepSeekHttp(401, "Authentication Fails")
         val insufficientBalance = SubtitleFailureMessages.deepSeekHttp(402, "Insufficient Balance")
 
-        assertEquals("DeepSeek API Key 无效或已失效，请前往设置重新配置后重试。", invalidKey.message)
+        assertTrue(invalidKey.message.contains("API Key 无效"))
+        assertTrue(invalidKey.message.contains("Authentication Fails"))
         assertFalse(invalidKey.retryable)
-        assertEquals("DeepSeek 账户余额不足，请充值后重试。", insufficientBalance.message)
+        assertTrue(insufficientBalance.message.contains("余额不足"))
+        assertTrue(insufficientBalance.message.contains("Insufficient Balance"))
         assertFalse(insufficientBalance.retryable)
+    }
+
+    @Test
+    fun deepSeekHttp_404SurfacesServiceMessageWithCustomProviderLabel() {
+        val failure = SubtitleFailureMessages.deepSeekHttp(
+            statusCode = 404,
+            serviceMessage = "models/gemini-2.5-flsh is not found for API version v1beta.",
+            providerLabel = "自定义 AI"
+        )
+
+        assertTrue(failure.message.contains("自定义 AI"))
+        assertTrue(failure.message.contains("HTTP 404"))
+        assertTrue(failure.message.contains("is not found"))
+        assertFalse(failure.message.contains("DeepSeek"))
+        assertFalse(failure.retryable)
     }
 
     @Test

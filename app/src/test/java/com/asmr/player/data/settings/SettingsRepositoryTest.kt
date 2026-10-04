@@ -321,6 +321,43 @@ class SettingsRepositoryTest {
         assertEquals("", repository.networkRouteSettings.first().customDnsServer)
     }
 
+    @Test
+    fun customAiApiSettings_returnsDefaultsWhenUnset() = runBlocking {
+        assertEquals(CustomAiApiSettings(), repository.loadCustomAiApiSettings())
+        assertEquals(CustomAiApiSettings(), repository.customAiApiSettings.first())
+    }
+
+    @Test
+    fun customAiApiSettings_settersRoundTrip() = runBlocking {
+        repository.setCustomAiApiEnabled(true)
+        repository.setCustomAiApiUrl("https://example.com/v1/chat/completions")
+        repository.setCustomAiApiModel("gpt-4o-mini")
+        repository.setCustomAiSendDeepSeekParams(true)
+
+        assertEquals(
+            CustomAiApiSettings(
+                enabled = true,
+                apiUrl = "https://example.com/v1/chat/completions",
+                model = "gpt-4o-mini",
+                sendDeepSeekParams = true
+            ),
+            repository.loadCustomAiApiSettings()
+        )
+    }
+
+    @Test
+    fun customAiApiSettings_settersTrimAndOverwrite() = runBlocking {
+        repository.setCustomAiApiUrl("  https://a.com/chat/completions ")
+        repository.setCustomAiApiUrl("https://b.com/chat/completions")
+        repository.setCustomAiApiModel("  qwen-max ")
+        repository.setCustomAiApiEnabled(false)
+
+        val settings = repository.loadCustomAiApiSettings()
+        assertEquals("https://b.com/chat/completions", settings.apiUrl)
+        assertEquals("qwen-max", settings.model)
+        assertFalse(settings.enabled)
+    }
+
     private suspend fun SettingsRepository.appVolumePercentValue(): Int {
         return appVolumePercent.first()
     }

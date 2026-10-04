@@ -282,6 +282,46 @@ class SettingsRepository private constructor(
             )
         }
 
+    val customAiApiSettings: Flow<CustomAiApiSettings> =
+        context.settingsDataStore.data.map { prefs -> readCustomAiApiSettings(prefs) }
+
+    suspend fun loadCustomAiApiSettings(): CustomAiApiSettings =
+        withContext(Dispatchers.IO) {
+            readCustomAiApiSettings(context.settingsDataStore.data.first())
+        }
+
+    private fun readCustomAiApiSettings(prefs: Preferences): CustomAiApiSettings =
+        CustomAiApiSettings(
+            enabled = prefs[SettingsKeys.CUSTOM_AI_API_ENABLED] ?: false,
+            apiUrl = prefs[SettingsKeys.CUSTOM_AI_API_URL] ?: "",
+            model = prefs[SettingsKeys.CUSTOM_AI_API_MODEL] ?: "",
+            sendDeepSeekParams = prefs[SettingsKeys.CUSTOM_AI_SEND_DEEPSEEK_PARAMS] ?: false
+        )
+
+    suspend fun setCustomAiApiEnabled(enabled: Boolean) {
+        withContext(Dispatchers.IO) {
+            context.settingsDataStore.edit { it[SettingsKeys.CUSTOM_AI_API_ENABLED] = enabled }
+        }
+    }
+
+    suspend fun setCustomAiApiUrl(url: String) {
+        withContext(Dispatchers.IO) {
+            context.settingsDataStore.edit { it[SettingsKeys.CUSTOM_AI_API_URL] = url.trim() }
+        }
+    }
+
+    suspend fun setCustomAiApiModel(model: String) {
+        withContext(Dispatchers.IO) {
+            context.settingsDataStore.edit { it[SettingsKeys.CUSTOM_AI_API_MODEL] = model.trim() }
+        }
+    }
+
+    suspend fun setCustomAiSendDeepSeekParams(enabled: Boolean) {
+        withContext(Dispatchers.IO) {
+            context.settingsDataStore.edit { it[SettingsKeys.CUSTOM_AI_SEND_DEEPSEEK_PARAMS] = enabled }
+        }
+    }
+
     suspend fun setSleepTimerEndAtMs(endAtMs: Long) {
         withContext(Dispatchers.IO) {
             context.settingsDataStore.edit { it[SettingsKeys.SLEEP_TIMER_END_AT_MS] = endAtMs }

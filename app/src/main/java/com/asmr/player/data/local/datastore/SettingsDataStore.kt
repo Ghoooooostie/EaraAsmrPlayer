@@ -7,6 +7,10 @@ import com.asmr.player.data.settings.LyricsPageSettings
 import com.asmr.player.data.settings.NowPlayingHomeLayoutMode
 import com.asmr.player.data.settings.NowPlayingLyricsSettings
 import com.asmr.player.data.settings.settingsDataStore
+import com.asmr.player.util.SUBTITLE_BILINGUAL_ORDER_PREF_KEY
+import com.asmr.player.util.SUBTITLE_DISPLAY_MODE_PREF_KEY
+import com.asmr.player.util.SubtitleBilingualOrder
+import com.asmr.player.util.SubtitleDisplayMode
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
@@ -42,6 +46,8 @@ class SettingsDataStore @Inject constructor(
     private val coverPreviewModeKey = stringPreferencesKey("cover_preview_mode")
     private val nowPlayingHomeLayoutModeKey = stringPreferencesKey("now_playing_home_layout_mode")
     private val nowPlayingHomeLayoutHintDismissedKey = booleanPreferencesKey("now_playing_home_layout_hint_dismissed")
+    private val subtitleDisplayModeKey = stringPreferencesKey(SUBTITLE_DISPLAY_MODE_PREF_KEY)
+    private val subtitleBilingualOrderKey = stringPreferencesKey(SUBTITLE_BILINGUAL_ORDER_PREF_KEY)
     private val nowPlayingLyricsHighlightFontSizeKey = floatPreferencesKey("now_playing_lyrics_highlight_font_size")
     private val nowPlayingLyricsMultilineEnabledKey = booleanPreferencesKey("now_playing_lyrics_multiline_enabled")
     private val lyricsPageFontSizeKey = floatPreferencesKey("lyrics_page_font_size")
@@ -56,7 +62,6 @@ class SettingsDataStore @Inject constructor(
     private val lastHandledClipboardEventKey = stringPreferencesKey("last_handled_clipboard_event")
 
     val theme: Flow<String> = context.settingsDataStore.data.map { it[themeKey] ?: "system" }
-    val sfwMode: Flow<Boolean> = context.settingsDataStore.data.map { it[sfwModeKey] ?: false }
     val libraryRoots: Flow<Set<String>> = context.settingsDataStore.data.map { it[libraryRootsKey] ?: emptySet() }
     val dynamicPlayerHueEnabled: Flow<Boolean> = context.settingsDataStore.data.map { it[dynamicPlayerHueEnabledKey] ?: false }
     val staticHueArgbLight: Flow<Int?> = context.settingsDataStore.data.map { prefs ->
@@ -97,6 +102,12 @@ class SettingsDataStore @Inject constructor(
     }
     val nowPlayingHomeLayoutHintDismissed: Flow<Boolean> = context.settingsDataStore.data.map {
         it[nowPlayingHomeLayoutHintDismissedKey] ?: false
+    }
+    val subtitleDisplayMode: Flow<SubtitleDisplayMode> = context.settingsDataStore.data.map { prefs ->
+        SubtitleDisplayMode.fromStorageValue(prefs[subtitleDisplayModeKey])
+    }
+    val subtitleBilingualOrder: Flow<SubtitleBilingualOrder> = context.settingsDataStore.data.map { prefs ->
+        SubtitleBilingualOrder.fromStorageValue(prefs[subtitleBilingualOrderKey])
     }
     val nowPlayingLyricsSettings: Flow<NowPlayingLyricsSettings> = context.settingsDataStore.data.map { prefs ->
         NowPlayingLyricsSettings(
@@ -210,6 +221,13 @@ class SettingsDataStore @Inject constructor(
             it[lyricsPageAlignKey] = settings.align
             it[lyricsPageDisplayAreaModeKey] = settings.displayAreaMode
         }
+    }
+
+    suspend fun setSubtitleDisplayMode(mode: SubtitleDisplayMode) {
+        context.settingsDataStore.edit { it[subtitleDisplayModeKey] = mode.storageValue }
+    }
+    suspend fun setSubtitleBilingualOrder(order: SubtitleBilingualOrder) {
+        context.settingsDataStore.edit { it[subtitleBilingualOrderKey] = order.storageValue }
     }
 
     suspend fun setNowPlayingLyricsSettings(settings: NowPlayingLyricsSettings) {

@@ -14,6 +14,10 @@ import com.asmr.player.data.local.db.entities.SubtitleTaskSnapshotEntity
 import com.asmr.player.data.local.db.entities.SubtitleTitleOwnerEntity
 import com.asmr.player.data.local.db.entities.SubtitleTitleOwnerKind
 import com.asmr.player.data.local.db.entities.SubtitleTranslationSourceEntity
+import com.asmr.player.data.settings.CustomAiApiSettings
+import com.asmr.player.data.settings.SettingsKeys
+import com.asmr.player.data.settings.normalizeCustomAiApiUrl
+import com.asmr.player.data.settings.settingsDataStore
 import java.io.File
 import java.util.UUID
 import kotlinx.coroutines.Dispatchers
@@ -21,6 +25,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.sync.Mutex
@@ -96,6 +101,29 @@ internal class SubtitleTaskRepository private constructor(context: Context) {
         polishingAlbumIds.update { emptySet() }
     }
 
+    private suspend fun ensureTranslationBackendConfigured() {
+        val prefs = appContext.settingsDataStore.data.first()
+        val customSettings = CustomAiApiSettings(
+            enabled = prefs[SettingsKeys.CUSTOM_AI_API_ENABLED] ?: false,
+            apiUrl = prefs[SettingsKeys.CUSTOM_AI_API_URL] ?: "",
+            model = prefs[SettingsKeys.CUSTOM_AI_API_MODEL] ?: "",
+            sendDeepSeekParams = prefs[SettingsKeys.CUSTOM_AI_SEND_DEEPSEEK_PARAMS] ?: false
+        )
+        check(
+            hasUsableTranslationBackend(
+                deepSeekApiKeyConfigured = DeepSeekApiKeyStore.get(appContext).isConfigured(),
+                customAiApiSettings = customSettings,
+                customAiApiKeyConfigured = CustomAiApiKeyStore.get(appContext).isConfigured()
+            )
+        ) {
+            if (customSettings.enabled) {
+                "请先在设置中完整配置自定义 AI API（端点、模型名与 API Key）"
+            } else {
+                "请先在设置中配置 DeepSeek API Key，或切换到自定义 AI API"
+            }
+        }
+    }
+
     suspend fun enqueueGeneration(targets: List<SubtitleGenerationTarget>): SubtitleTaskHandle {
         reconcileOnAppLaunch()
         return enqueueMutex.withLock {
@@ -109,9 +137,7 @@ internal class SubtitleTaskRepository private constructor(context: Context) {
             check(SubtitleModelRepository.get(appContext).isModelAvailable()) {
                 SubtitleModelRepository.MODEL_REQUIRED_MESSAGE
             }
-            check(DeepSeekApiKeyStore.get(appContext).isConfigured()) {
-                "请先在设置中配置 DeepSeek API Key"
-            }
+            ensureTranslationBackendConfigured()
             enqueue(
                 targets = normalized.map { it.trackId to it.title },
                 origin = SubtitleTaskOrigin.GENERATED,
@@ -125,9 +151,7 @@ internal class SubtitleTaskRepository private constructor(context: Context) {
         return enqueueMutex.withLock {
             require(target.trackId > 0L) { "字幕所属音轨无效" }
             ensureTrackAlbumNotPolishing(target.trackId)
-            check(DeepSeekApiKeyStore.get(appContext).isConfigured()) {
-                "请先在设置中配置 DeepSeek API Key"
-            }
+            ensureTranslationBackendConfigured()
             val subtitles = database.trackDao().getSubtitlesForTrack(target.trackId)
             require(subtitles.any { it.text.isNotBlank() }) { "当前音轨没有可翻译的本地字幕" }
             enqueue(
@@ -558,3 +582,16 @@ private fun SubtitleTaskWithItems.toUi(): SubtitleTaskUi = SubtitleTaskUi(
         )
     }
 )
+
+internal fun hasUsableTranslationBackend(
+    deepSeekApiKeyConfigured: Boolean,
+    customAiApiSettings: CustomAiApiSettings,
+    customAiApiKeyConfigured: Boolean
+): Boolean {
+    if (customAiApiSettings.enabled) {
+        return customAiApiKeyConfigured &&
+            normalizeCustomAiApiUrl(customAiApiSettings.apiUrl) != null &&
+            customAiApiSettings.model.isNotBlank()
+    }
+    return deepSeekApiKeyConfigured
+}

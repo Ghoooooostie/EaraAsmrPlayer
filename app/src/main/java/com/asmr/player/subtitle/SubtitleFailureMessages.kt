@@ -77,41 +77,73 @@ internal object SubtitleFailureMessages {
         }
     }
 
-    fun network(error: IOException): String {
+    fun network(error: IOException, providerLabel: String = "DeepSeek"): String {
         val causes = error.causeChain()
         return when {
             causes.any { it is SocketTimeoutException } ->
-                "DeepSeek 网络请求超时，请检查网络或代理设置后重试。"
+                "$providerLabel 网络请求超时，请检查网络或代理设置后重试。"
 
             causes.any { it is UnknownHostException || it is ConnectException || it is NoRouteToHostException } ->
-                "无法连接 DeepSeek 翻译服务，请检查网络或代理设置后重试。"
+                "无法连接 $providerLabel 翻译服务，请检查网络或代理设置后重试。"
 
             causes.any { it is SSLException } ->
-                "无法与 DeepSeek 建立安全连接，请检查系统时间、证书或代理设置后重试。"
+                "无法与 $providerLabel 建立安全连接，请检查系统时间、证书或代理设置后重试。"
 
             else ->
-                "DeepSeek 网络请求失败，请检查网络或代理设置后重试。"
+                "$providerLabel 网络请求失败，请检查网络或代理设置后重试。"
         }
     }
 
-    fun deepSeekHttp(statusCode: Int, serviceMessage: String?): DeepSeekHttpFailure {
+    fun deepSeekHttp(
+        statusCode: Int,
+        serviceMessage: String?,
+        providerLabel: String = "DeepSeek"
+    ): DeepSeekHttpFailure {
         val retryable = statusCode == 408 || statusCode == 425 || statusCode == 429 || statusCode >= 500
         val message = when (statusCode) {
             400, 422 -> buildHttpMessage(
-                prefix = "DeepSeek 拒绝了翻译请求（HTTP $statusCode）",
+                prefix = "$providerLabel 拒绝了翻译请求（HTTP $statusCode）",
                 serviceMessage = serviceMessage,
                 action = "请更新应用或稍后重试。"
             )
-            401 -> "DeepSeek API Key 无效或已失效，请前往设置重新配置后重试。"
-            402 -> "DeepSeek 账户余额不足，请充值后重试。"
-            403 -> "DeepSeek 拒绝访问，请检查 API Key 权限或有效状态后重试。"
-            404 -> "DeepSeek 翻译模型不可用，请更新应用后重试。"
-            408 -> "DeepSeek 请求超时，请检查网络后重试。"
-            425 -> "DeepSeek 暂时无法处理翻译请求，请稍后重试。"
-            429 -> "DeepSeek 请求过于频繁，请稍后重试。"
-            in 500..599 -> "DeepSeek 服务暂时不可用（HTTP $statusCode），请稍后重试。"
+            401 -> buildHttpMessage(
+                prefix = "$providerLabel API Key 无效或已失效",
+                serviceMessage = serviceMessage,
+                action = "请前往设置重新配置后重试。"
+            )
+            402 -> buildHttpMessage(
+                prefix = "$providerLabel 账户余额不足",
+                serviceMessage = serviceMessage,
+                action = "请充值后重试。"
+            )
+            403 -> buildHttpMessage(
+                prefix = "$providerLabel 拒绝访问",
+                serviceMessage = serviceMessage,
+                action = "请检查 API Key 权限或有效状态后重试。"
+            )
+            404 -> buildHttpMessage(
+                prefix = "$providerLabel 未找到该模型或端点（HTTP 404）",
+                serviceMessage = serviceMessage,
+                action = "请检查设置中的模型名与端点地址后重试。"
+            )
+            408 -> "$providerLabel 请求超时，请检查网络后重试。"
+            425 -> buildHttpMessage(
+                prefix = "$providerLabel 暂时无法处理翻译请求",
+                serviceMessage = serviceMessage,
+                action = "请稍后重试。"
+            )
+            429 -> buildHttpMessage(
+                prefix = "$providerLabel 请求过于频繁",
+                serviceMessage = serviceMessage,
+                action = "请稍后重试。"
+            )
+            in 500..599 -> buildHttpMessage(
+                prefix = "$providerLabel 服务暂时不可用（HTTP $statusCode）",
+                serviceMessage = serviceMessage,
+                action = "请稍后重试。"
+            )
             else -> buildHttpMessage(
-                prefix = "DeepSeek 翻译请求失败（HTTP $statusCode）",
+                prefix = "$providerLabel 翻译请求失败（HTTP $statusCode）",
                 serviceMessage = serviceMessage,
                 action = "请稍后重试。"
             )

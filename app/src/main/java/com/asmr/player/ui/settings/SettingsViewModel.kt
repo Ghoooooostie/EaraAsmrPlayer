@@ -17,6 +17,7 @@ import com.asmr.player.data.remote.download.DownloadDirectoryCoordinator
 import com.asmr.player.data.remote.update.GitHubUpdateClient
 import com.asmr.player.data.remote.update.UpdateRelease
 import com.asmr.player.data.settings.CoverPreviewMode
+import com.asmr.player.data.settings.CustomAiApiSettings
 import com.asmr.player.data.settings.DeepSeekReasoningEffort
 import com.asmr.player.data.settings.DeepSeekTranslationSettings
 import com.asmr.player.data.settings.AppProxyMode
@@ -25,12 +26,24 @@ import com.asmr.player.data.settings.LyricsPageSettings
 import com.asmr.player.data.settings.NetworkRouteSettings
 import com.asmr.player.data.settings.NowPlayingLyricsSettings
 import com.asmr.player.data.settings.SettingsRepository
+import com.asmr.player.data.settings.normalizeCustomAiApiUrl
 import com.asmr.player.subtitle.SubtitleModelDownloadSource
 import com.asmr.player.subtitle.SubtitleModelRepository
 import com.asmr.player.subtitle.SubtitleModelState
+import com.asmr.player.subtitle.CustomAiApiKeyStore
 import com.asmr.player.subtitle.DeepSeekApiKeyStore
 import com.asmr.player.subtitle.DeepSeekAccountRepository
+import com.asmr.player.subtitle.TranslationApiTestConfig
+import com.asmr.player.subtitle.CustomAiModelsOutcome
+import com.asmr.player.subtitle.customAiModelsUrl
+import com.asmr.player.subtitle.fetchCustomAiApiModels
+import com.asmr.player.subtitle.TranslationApiTestOutcome
+import com.asmr.player.subtitle.resolveTranslationApiTestConfig
+import com.asmr.player.subtitle.runTranslationApiTest
 import com.asmr.player.util.MessageManager
+import com.asmr.player.util.SubtitleBilingualOrder
+import com.asmr.player.util.SubtitleDisplayMode
+import com.google.gson.Gson
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import java.io.File
@@ -106,6 +119,7 @@ class SettingsViewModel @Inject constructor(
 ) : ViewModel() {
     private val subtitleModelRepository = SubtitleModelRepository.get(context)
     private val deepSeekApiKeyStore = DeepSeekApiKeyStore.get(context)
+    private val customAiApiKeyStore = CustomAiApiKeyStore.get(context)
 
     val downloadDestination: StateFlow<DownloadDestination> = downloadDestinationStore.destination
         .stateIn(
@@ -152,6 +166,12 @@ class SettingsViewModel @Inject constructor(
 
     val floatingLyricsSettings: StateFlow<FloatingLyricsSettings> = settingsRepository.floatingLyricsSettings
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), FloatingLyricsSettings())
+
+    val subtitleDisplayMode: StateFlow<SubtitleDisplayMode> = settingsDataStore.subtitleDisplayMode
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), SubtitleDisplayMode.CHINESE)
+
+    val subtitleBilingualOrder: StateFlow<SubtitleBilingualOrder> = settingsDataStore.subtitleBilingualOrder
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), SubtitleBilingualOrder.JAPANESE_FIRST)
 
     val lyricsPageSettings: StateFlow<LyricsPageSettings> = settingsDataStore.lyricsPageSettings
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), LyricsPageSettings())
@@ -226,6 +246,37 @@ class SettingsViewModel @Inject constructor(
     internal val deepSeekApiKeyState = _deepSeekApiKeyState.asStateFlow()
     internal val deepSeekAccountState = deepSeekAccountRepository.state
 
+    internal val customAiApiSettings: StateFlow<CustomAiApiSettings> =
+        settingsRepository.customAiApiSettings.stateIn(
+            viewModelScope,
+            SharingStarted.WhileSubscribed(5_000),
+            CustomAiApiSettings()
+        )
+
+    private val _customAiApiEndpointState = MutableStateFlow(DeepSeekApiKeyUiState())
+    internal val customAiApiEndpointState = _customAiApiEndpointState.asStateFlow()
+
+    private val _customAiApiKeyState = MutableStateFlow(DeepSeekApiKeyUiState())
+    internal val customAiApiKeyState = _customAiApiKeyState.asStateFlow()
+
+    internal data class CustomAiApiModelsUiState(
+        val loading: Boolean = false,
+        val models: List<String> = emptyList(),
+        val error: String? = null
+    )
+
+    private val _customAiApiModelsState = MutableStateFlow(CustomAiApiModelsUiState())
+    internal val customAiApiModelsState = _customAiApiModelsState.asStateFlow()
+
+    internal data class TranslationApiTestUiState(
+        val running: Boolean = false,
+        val success: Boolean = false,
+        val resultMessage: String? = null
+    )
+
+    private val _translationApiTestState = MutableStateFlow(TranslationApiTestUiState())
+    internal val translationApiTestState = _translationApiTestState.asStateFlow()
+
     private val updateClient = GitHubUpdateClient(okHttpClient)
     private val _updateState = MutableStateFlow<AppUpdateState>(AppUpdateState.Idle)
     val updateState = _updateState.asStateFlow()
@@ -244,6 +295,8 @@ class SettingsViewModel @Inject constructor(
                 deepSeekAccountRepository.bindApiKey(apiKey)
                 deepSeekAccountRepository.refreshBalance(apiKey)
             }
+            val customAiConfigured = customAiApiKeyStore.read().isNotBlank()
+            _customAiApiKeyState.value = _customAiApiKeyState.value.copy(configured = customAiConfigured)
         }
     }
 
@@ -253,6 +306,14 @@ class SettingsViewModel @Inject constructor(
 
     fun updateFloatingLyricsSettings(settings: FloatingLyricsSettings) {
         viewModelScope.launch { settingsRepository.updateFloatingLyricsSettings(settings) }
+    }
+
+    fun setSubtitleDisplayMode(mode: SubtitleDisplayMode) {
+        viewModelScope.launch { settingsDataStore.setSubtitleDisplayMode(mode) }
+    }
+
+    fun setSubtitleBilingualOrder(order: SubtitleBilingualOrder) {
+        viewModelScope.launch { settingsDataStore.setSubtitleBilingualOrder(order) }
     }
 
     fun updateLyricsPageSettings(settings: LyricsPageSettings) {
@@ -441,6 +502,137 @@ class SettingsViewModel @Inject constructor(
 
     internal fun setDeepSeekFinalPolishEnabled(enabled: Boolean) {
         viewModelScope.launch { settingsRepository.setDeepSeekFinalPolishEnabled(enabled) }
+    }
+
+    internal fun setCustomAiApiEnabled(enabled: Boolean) {
+        viewModelScope.launch { settingsRepository.setCustomAiApiEnabled(enabled) }
+    }
+
+    internal fun setCustomAiSendDeepSeekParams(enabled: Boolean) {
+        viewModelScope.launch { settingsRepository.setCustomAiSendDeepSeekParams(enabled) }
+    }
+
+    internal fun saveCustomAiApiEndpoint(urlInput: String, modelInput: String) {
+        val normalizedUrl = normalizeCustomAiApiUrl(urlInput)
+        if (normalizedUrl == null) {
+            _customAiApiEndpointState.value = _customAiApiEndpointState.value.copy(
+                errorMessage = "端点需为以 /chat/completions 结尾的完整地址（远程服务需 https，本地可用 http）"
+            )
+            return
+        }
+        val model = modelInput.trim()
+        if (model.isEmpty()) {
+            _customAiApiEndpointState.value = _customAiApiEndpointState.value.copy(
+                errorMessage = "模型名不能为空"
+            )
+            return
+        }
+        viewModelScope.launch(Dispatchers.IO) {
+            _customAiApiEndpointState.value = _customAiApiEndpointState.value.copy(
+                saving = true,
+                errorMessage = null
+            )
+            val saved = runCatching {
+                settingsRepository.setCustomAiApiUrl(normalizedUrl)
+                settingsRepository.setCustomAiApiModel(model)
+            }.isSuccess
+            if (saved) {
+                val current = _customAiApiEndpointState.value
+                _customAiApiEndpointState.value = current.copy(
+                    configured = true,
+                    saving = false,
+                    errorMessage = null,
+                    saveVersion = current.saveVersion + 1L
+                )
+            } else {
+                _customAiApiEndpointState.value = _customAiApiEndpointState.value.copy(
+                    saving = false,
+                    errorMessage = "端点配置保存失败"
+                )
+            }
+        }
+    }
+
+    internal fun saveCustomAiApiKey(apiKey: String) {
+        val normalized = apiKey.trim()
+        if (normalized.isEmpty()) return
+        viewModelScope.launch(Dispatchers.IO) {
+            _customAiApiKeyState.value = _customAiApiKeyState.value.copy(
+                saving = true,
+                errorMessage = null
+            )
+            val saved = runCatching { customAiApiKeyStore.save(normalized) }.isSuccess
+            if (saved) {
+                val current = _customAiApiKeyState.value
+                _customAiApiKeyState.value = current.copy(
+                    configured = normalized.isNotEmpty(),
+                    saving = false,
+                    errorMessage = null,
+                    saveVersion = current.saveVersion + 1L
+                )
+            } else {
+                _customAiApiKeyState.value = _customAiApiKeyState.value.copy(
+                    saving = false,
+                    errorMessage = "API Key 保存失败"
+                )
+            }
+        }
+    }
+
+    internal fun refreshCustomAiApiModels() {
+        viewModelScope.launch(Dispatchers.IO) {
+            if (_customAiApiModelsState.value.loading) return@launch
+            _customAiApiModelsState.value = CustomAiApiModelsUiState(loading = true)
+            val settings = settingsRepository.loadCustomAiApiSettings()
+            val modelsUrl = customAiModelsUrl(settings.apiUrl)
+            val apiKey = customAiApiKeyStore.read().trim()
+            when {
+                modelsUrl == null -> _customAiApiModelsState.value = CustomAiApiModelsUiState(
+                    error = "请先保存有效的端点地址（需以 /chat/completions 结尾）"
+                )
+                apiKey.isEmpty() -> _customAiApiModelsState.value = CustomAiApiModelsUiState(
+                    error = "请先保存自定义 AI API Key"
+                )
+                else -> when (val outcome = fetchCustomAiApiModels(okHttpClient, modelsUrl, apiKey)) {
+                    is CustomAiModelsOutcome.Loaded -> _customAiApiModelsState.value =
+                        CustomAiApiModelsUiState(models = outcome.models)
+                    is CustomAiModelsOutcome.Failed -> _customAiApiModelsState.value =
+                        CustomAiApiModelsUiState(error = outcome.message)
+                }
+            }
+        }
+    }
+
+    internal fun testTranslationApi() {
+        viewModelScope.launch(Dispatchers.IO) {
+            if (_translationApiTestState.value.running) return@launch
+            _translationApiTestState.value = TranslationApiTestUiState(running = true)
+            val config = resolveTranslationApiTestConfig(
+                customSettings = settingsRepository.loadCustomAiApiSettings(),
+                customApiKey = customAiApiKeyStore.read(),
+                deepSeekApiKey = deepSeekApiKeyStore.read()
+            )
+            val outcome = when (config) {
+                is TranslationApiTestConfig.NotReady ->
+                    TranslationApiTestOutcome.Failure(config.message)
+                is TranslationApiTestConfig.Endpoint -> runTranslationApiTest(
+                    okHttpClient = okHttpClient,
+                    gson = Gson(),
+                    apiUrl = config.apiUrl,
+                    apiKey = config.apiKey,
+                    model = config.model
+                )
+            }
+            _translationApiTestState.value = when (outcome) {
+                TranslationApiTestOutcome.Success -> TranslationApiTestUiState(
+                    success = true,
+                    resultMessage = "连通正常，模型返回有效响应"
+                )
+                is TranslationApiTestOutcome.Failure -> TranslationApiTestUiState(
+                    resultMessage = outcome.message
+                )
+            }
+        }
     }
 
     fun setAutoUpdateCheckEnabled(enabled: Boolean) {

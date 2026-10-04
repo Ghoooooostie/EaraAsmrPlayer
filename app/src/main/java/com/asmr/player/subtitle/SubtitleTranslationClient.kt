@@ -54,7 +54,7 @@ private data class DeepSeekResponseFormat(
 private data class DeepSeekChatRequest(
     val model: String = DEEPSEEK_SUBTITLE_MODEL,
     val messages: List<DeepSeekChatMessage>,
-    val thinking: DeepSeekThinking = DeepSeekThinking(),
+    val thinking: DeepSeekThinking? = DeepSeekThinking(),
     @SerializedName("reasoning_effort")
     val reasoningEffort: String? = "high",
     @SerializedName("response_format")
@@ -121,11 +121,14 @@ internal class SubtitleTranslationClient(
     apiKey: String,
     private val settings: DeepSeekTranslationSettings = DeepSeekTranslationSettings(),
     private val apiUrl: String = DEEPSEEK_CHAT_COMPLETIONS_URL,
+    private val model: String = DEEPSEEK_SUBTITLE_MODEL,
+    private val sendDeepSeekParams: Boolean = true,
     private val onTokenUsage: (Long) -> Unit = {}
 ) {
     private val normalizedApiKey = apiKey.trim().also {
         require(it.isNotEmpty()) { "请先在设置中配置 DeepSeek API Key" }
     }
+    private val providerLabel = if (apiUrl == DEEPSEEK_CHAT_COMPLETIONS_URL) "DeepSeek" else "自定义 AI"
     private val authorization = "Bearer $normalizedApiKey"
     private val callFactory: Call.Factory = okHttpClient.newBuilder()
         .connectTimeout(20, TimeUnit.SECONDS)
@@ -316,7 +319,9 @@ internal class SubtitleTranslationClient(
             circle = circle,
             cv = cv,
             trackTitles = trackTitles,
-            settings = settings
+            settings = settings,
+            model = model,
+            sendDeepSeekParams = sendDeepSeekParams
         )
         val expectedTrackIds = trackTitles.map(Pair<Long, String>::first)
         return retrySubtitleTranslation(maxAttempts = maxAttempts, onAttempt = { _, _ -> }, onRetry = { _, _, _ -> }) {
@@ -465,14 +470,18 @@ internal class SubtitleTranslationClient(
             buildPolishAgentRequest(
                 gson = gson,
                 messages = messages,
-                settings = settings
+                settings = settings,
+                model = model,
+                sendDeepSeekParams = sendDeepSeekParams
             )
         } else {
             buildDeepSeekSubtitleAgentRequest(
                 gson = gson,
                 messages = messages,
                 settings = settings,
-                scriptContext = scriptContext
+                scriptContext = scriptContext,
+                model = model,
+                sendDeepSeekParams = sendDeepSeekParams
             )
         }
         return executeTranslationRequest(
@@ -508,7 +517,7 @@ internal class SubtitleTranslationClient(
             throw cancelled
         } catch (error: IOException) {
             throw SubtitleTranslationException(
-                message = SubtitleFailureMessages.network(error),
+                message = SubtitleFailureMessages.network(error, providerLabel),
                 retryable = true,
                 cause = error
             )
@@ -519,7 +528,8 @@ internal class SubtitleTranslationClient(
                 if (!it.isSuccessful) {
                     val failure = SubtitleFailureMessages.deepSeekHttp(
                         statusCode = it.code,
-                        serviceMessage = parseDeepSeekErrorMessage(raw)
+                        serviceMessage = parseDeepSeekErrorMessage(raw),
+                        providerLabel = providerLabel
                     )
                     throw SubtitleTranslationException(
                         message = failure.message,
@@ -621,16 +631,23 @@ internal class SubtitleTranslationClient(
     }
 }
 
-internal fun parseDeepSeekErrorMessage(raw: String): String? = runCatching {
-    JsonParser.parseString(raw).asJsonObject
-        .getAsJsonObject("error")
-        ?.get("message")
-        ?.asString
-        ?.trim()
-        ?.replace(Regex("\\s+"), " ")
-        ?.take(300)
-        ?.takeIf(String::isNotEmpty)
-}.getOrNull()
+internal fun parseDeepSeekErrorMessage(raw: String): String? {
+    val jsonMessage = runCatching {
+        JsonParser.parseString(raw).asJsonObject
+            .getAsJsonObject("error")
+            ?.get("message")
+            ?.asString
+            ?.trim()
+            ?.replace(Regex("\\s+"), " ")
+            ?.take(300)
+            ?.takeIf(String::isNotEmpty)
+    }.getOrNull()
+    if (jsonMessage != null) return jsonMessage
+    return raw.trim()
+        .replace(Regex("\\s+"), " ")
+        .take(300)
+        .takeIf(String::isNotEmpty)
+}
 
 internal fun parseRetryAfterMillis(
     value: String?,
@@ -658,7 +675,7 @@ internal const val POLISH_READ_TOOL_NAME = "read_subtitle_polish_state"
 internal const val POLISH_WRITE_TOOL_NAME = "write_polished_chinese_subtitles"
 internal const val SCRIPT_LIST_TOOL_NAME = "list_work_script_files"
 internal const val SCRIPT_READ_TOOL_NAME = "read_work_script_file"
-private const val DEEPSEEK_CHAT_COMPLETIONS_URL = "https://api.deepseek.com/chat/completions"
+internal const val DEEPSEEK_CHAT_COMPLETIONS_URL = "https://api.deepseek.com/chat/completions"
 private const val MAX_SUBTITLE_AGENT_STALLED_TURNS = 4
 private const val MAX_POLISH_AGENT_STALLED_TURNS = 4
 private const val POLISH_READ_PAGE_SIZE = 40
@@ -725,7 +742,9 @@ internal fun buildDeepSeekTitleTranslationRequest(
     circle: String,
     cv: String,
     trackTitles: List<Pair<Long, String>>,
-    settings: DeepSeekTranslationSettings = DeepSeekTranslationSettings()
+    settings: DeepSeekTranslationSettings = DeepSeekTranslationSettings(),
+    model: String = DEEPSEEK_SUBTITLE_MODEL,
+    sendDeepSeekParams: Boolean = true
 ): String {
     require(albumTitle.isNotBlank())
     require(trackTitles.isNotEmpty())
@@ -739,12 +758,17 @@ internal fun buildDeepSeekTitleTranslationRequest(
     }
     return gson.toJson(
         DeepSeekChatRequest(
+            model = model,
             messages = listOf(
                 DeepSeekChatMessage(role = "system", content = displayNameTranslationSystemPrompt()),
                 DeepSeekChatMessage(role = "user", content = gson.toJson(userPayload))
             ),
-            thinking = DeepSeekThinking(type = if (settings.thinkingEnabled) "enabled" else "disabled"),
-            reasoningEffort = settings.reasoningEffort.wireValue.takeIf { settings.thinkingEnabled }
+            thinking = DeepSeekThinking(type = if (settings.thinkingEnabled) "enabled" else "disabled")
+                .takeIf { sendDeepSeekParams },
+            reasoningEffort = settings.reasoningEffort.wireValue.takeIf {
+                settings.thinkingEnabled && sendDeepSeekParams
+            },
+            responseFormat = DeepSeekResponseFormat().takeIf { sendDeepSeekParams }
         )
     )
 }
@@ -839,17 +863,20 @@ internal fun buildDeepSeekSubtitleAgentRequest(
     gson: Gson,
     messages: List<DeepSeekChatMessage>,
     settings: DeepSeekTranslationSettings = DeepSeekTranslationSettings(),
-    scriptContext: SubtitleScriptContext? = null
+    scriptContext: SubtitleScriptContext? = null,
+    model: String = DEEPSEEK_SUBTITLE_MODEL,
+    sendDeepSeekParams: Boolean = true
 ): String {
     require(messages.isNotEmpty())
     return gson.toJson(
         DeepSeekChatRequest(
+            model = model,
             messages = messages,
             thinking = DeepSeekThinking(
                 type = if (settings.thinkingEnabled) "enabled" else "disabled"
-            ),
+            ).takeIf { sendDeepSeekParams },
             reasoningEffort = settings.reasoningEffort.wireValue.takeIf {
-                settings.thinkingEnabled
+                settings.thinkingEnabled && sendDeepSeekParams
             },
             responseFormat = null,
             tools = subtitleTranslationTools(scriptContext)
@@ -889,17 +916,20 @@ internal fun buildPolishAgentInitialMessages(
 internal fun buildPolishAgentRequest(
     gson: Gson,
     messages: List<DeepSeekChatMessage>,
-    settings: DeepSeekTranslationSettings = DeepSeekTranslationSettings()
+    settings: DeepSeekTranslationSettings = DeepSeekTranslationSettings(),
+    model: String = DEEPSEEK_SUBTITLE_MODEL,
+    sendDeepSeekParams: Boolean = true
 ): String {
     require(messages.isNotEmpty())
     return gson.toJson(
         DeepSeekChatRequest(
+            model = model,
             messages = messages,
             thinking = DeepSeekThinking(
                 type = if (settings.thinkingEnabled) "enabled" else "disabled"
-            ),
+            ).takeIf { sendDeepSeekParams },
             reasoningEffort = settings.reasoningEffort.wireValue.takeIf {
-                settings.thinkingEnabled
+                settings.thinkingEnabled && sendDeepSeekParams
             },
             responseFormat = null,
             tools = subtitlePolishTools()

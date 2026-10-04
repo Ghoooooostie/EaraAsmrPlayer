@@ -98,4 +98,9 @@ object SettingsKeys {
     val DEEPSEEK_THINKING_ENABLED = booleanPreferencesKey("deepseek_thinking_enabled")
     val DEEPSEEK_REASONING_EFFORT = stringPreferencesKey("deepseek_reasoning_effort")
     val DEEPSEEK_FINAL_POLISH_ENABLED = booleanPreferencesKey("deepseek_final_polish_enabled")
+
+    val CUSTOM_AI_API_ENABLED = booleanPreferencesKey("custom_ai_api_enabled")
+    val CUSTOM_AI_API_URL = stringPreferencesKey("custom_ai_api_url")
+    val CUSTOM_AI_API_MODEL = stringPreferencesKey("custom_ai_api_model")
+    val CUSTOM_AI_SEND_DEEPSEEK_PARAMS = booleanPreferencesKey("custom_ai_send_deepseek_params")
 }

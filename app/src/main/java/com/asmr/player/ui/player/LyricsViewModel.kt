@@ -3,15 +3,20 @@ package com.asmr.player.ui.player
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.media3.common.MediaItem
+import com.asmr.player.data.local.datastore.SettingsDataStore
 import com.asmr.player.data.lyrics.EXTRA_ALBUM_WORK_ID
 import com.asmr.player.data.lyrics.EXTRA_LYRICS_RELATIVE_PATH_NO_EXT
 import com.asmr.player.data.lyrics.LyricsLoader
+import com.asmr.player.util.SubtitleDisplayMode
 import com.asmr.player.util.SubtitleEntry
+import com.asmr.player.util.withDisplayMode
 import com.asmr.player.playback.PlayerConnection
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
@@ -25,23 +30,33 @@ data class LyricsUiState(
 @HiltViewModel
 class LyricsViewModel @Inject constructor(
     private val playerConnection: PlayerConnection,
-    private val lyricsLoader: LyricsLoader
+    private val lyricsLoader: LyricsLoader,
+    private val settingsDataStore: SettingsDataStore
 ) : ViewModel() {
-    private val _uiState = MutableStateFlow(LyricsUiState())
-    val uiState: StateFlow<LyricsUiState> = _uiState.asStateFlow()
+    /** 原始歌词：保留日文原文，供显示模式切换时重新解析。 */
+    private val _loadedState = MutableStateFlow(LyricsUiState())
+
+    val uiState: StateFlow<LyricsUiState> = combine(
+        _loadedState,
+        combine(settingsDataStore.subtitleDisplayMode, settingsDataStore.subtitleBilingualOrder) { mode, order ->
+            mode to order
+        }
+    ) { state, (mode, order) ->
+        state.copy(lyrics = state.lyrics.withDisplayMode(mode, order))
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), LyricsUiState())
 
     val playback = playerConnection.snapshot
 
     private suspend fun reloadForItem(item: MediaItem?) {
         val mediaId = item?.mediaId.orEmpty()
         if (mediaId.isBlank()) {
-            _uiState.value = LyricsUiState()
+            _loadedState.value = LyricsUiState()
             return
         }
         val mediaKey = lyricsContentKeyForItem(item)
-        _uiState.value = _uiState.value.copy(isLoading = true)
+        _loadedState.value = _loadedState.value.copy(isLoading = true)
         val result = lyricsLoader.load(item)
-        _uiState.value = LyricsUiState(
+        _loadedState.value = LyricsUiState(
             title = result.title,
             contentKey = mediaKey,
             isLoading = false,
@@ -68,7 +83,7 @@ class LyricsViewModel @Inject constructor(
                 val mediaId = item?.mediaId.orEmpty()
                 val mediaKey = lyricsContentKeyForItem(item)
                 if (mediaId.isBlank()) {
-                    _uiState.value = LyricsUiState()
+                    _loadedState.value = LyricsUiState()
                     return@collect
                 }
                 if (lastMediaKey == mediaKey) return@collect
