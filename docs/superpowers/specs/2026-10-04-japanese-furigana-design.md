@@ -3,6 +3,7 @@
 日期：2026-10-04
 状态：已确认，待实现
 范围：EaraAsmrPlayer（Kotlin + Jetpack Compose，`minSdk = 24`）
+实现计划：`docs/superpowers/plans/2026-10-04-japanese-furigana.md`（计划落地时对本文 §3.1、§3.2、§4.2、§6.1、§6.2、§6.3、§6.4、§6.5、§8、§9、§11 做了 8 处必要修订，均已回写本文，两份文档一致）
 
 ## 1. 背景与目标
 
@@ -13,7 +14,7 @@
 非目标（明确不做，避免范围漂移）：
 
 - 不做汉字上方的双行 ruby 排版（`minSdk = 24`，系统级 ruby 基本只有 Android 12+ 可用）
-- 不给注音单独的可调字号（用相对单位自动跟随歌词字号）
+- 不给注音单独的可调字号（用比例常量自动跟随歌词字号）
 - 不给作品标题、歌手名、搜索词做注音（只做歌词/字幕的三个显示面）
 - 不改导出的 LRC/VTT/SRT 内容
 - 不按需下载词典，不让 AI 生成读音，不做罗马音
@@ -34,7 +35,9 @@
 三层，依赖方向单一：
 
 ```
-data/reading/ReadingDictionary.kt      Android assets I/O + 存储结构（唯一有 Android 依赖的层）
+data/reading/ReadingDictionary.kt      assets I/O + 进程内单次尝试守卫（唯一有 Android 依赖的层）
+        │ 解析委派给
+data/reading/ReadingDictionaryIndex.kt 排序数组 + 二分 + 单字派生（纯 JVM）
         │ implements
 util/JapaneseReadingSupport.kt         ReadingSource 抽象 + 匹配算法 + 行级缓存（纯 JVM，可单测）
         │ produces List<ReadingToken>
@@ -49,8 +52,13 @@ ui/common/FuriganaText.kt              格式映射：AnnotatedString（Compose�
 /** 一个注音单元：base 为原文字面，reading 为需要以小字显示的假名；null 表示不注音。 */
 data class ReadingToken(val base: String, val reading: String? = null)
 
+/** 注音相对基字的字号比例。 */
+const val FURIGANA_READING_SCALE = 0.55f
+
 /** 词典查询能力，由 data 层实现，便于算法层在 JVM 上测试。 */
 interface ReadingSource {
+    /** 词典是否已加载可用；未就绪时缓存层必须跳过写入（见 §8）。 */
+    val ready: Boolean
     val maxSurfaceLength: Int
     fun readingOf(surface: String): String?
     fun kanjiReadingOf(kanji: Char): String?
@@ -63,6 +71,8 @@ fun annotateJapanese(text: String, source: ReadingSource?): List<ReadingToken>
 fun annotateLine(text: String, source: ReadingSource?): List<ReadingToken>
 ```
 
+`ready` 是必需的：§8 的「未就绪不写缓存」规则要求缓存层能区分「词典还没加载完」和「词典已加载但这行查不到读音」。若只看 `readingOf` 返回 null，两种情况无法分辨，会把预热期的空结果永久缓存下来，注音就再也不会出现。
+
 `annotateLine` 内部持有行级 LRU（见 §8），是 Compose 与 `PlaybackService` 共用的唯一入口，这样两个进程边界的缓存行为与「未就绪不缓存」规则只有一份实现。
 
 ### 3.2 词典实现（`data/reading/ReadingDictionary.kt`，新建）
@@ -71,8 +81,12 @@ fun annotateLine(text: String, source: ReadingSource?): List<ReadingToken>
 
 - 存储结构：排序后的双数组 `Array<String>` surfaces + `Array<String>` readings；查询用二分定位前缀下界，再线性扫描到前缀结束。选它而不是 `HashMap`，省掉约 40% 的桶开销，在手机上值得。
 - 单字回退表：同样排序数组，键为单个汉字。
-- 加载：仅在「开关为开」时由 `suspend fun warmUp()` 触发，`Dispatchers.Default` + `Mutex` 保证整个进程只尝试一次。
-- 未就绪时 `readingOf`/`kanjiReadingOf` 返回 null，不抛异常。
+- 加载：仅在「开关为开」时由 `suspend fun warmUp()` 触发，`Dispatchers.Default` + `Mutex` + `attempted` 守卫保证整个进程只尝试一次（失败也不重试，避免重试风暴）。
+- 未就绪时 `ready` 为 false，`readingOf`/`kanjiReadingOf` 返回 null，不抛异常。
+
+解析与 IO 分两个类：`ReadingDictionaryIndex`（纯 JVM，`parse(wordLines, kanjiLines)` 与 `deriveKanjiLines(wordLines)`，无任何 Android 依赖，单测直接喂字符串列表）与 `ReadingDictionary`（`@Inject constructor(@ApplicationContext context)`，只做 assets 解压与委派）。
+
+这里有一个必须遵守的形状约束：Dagger 无法注入带默认值的构造参数，所以「可替换的资产打开方式」不能写成构造参数，只能是方法参数——`internal suspend fun warmUpWith(open: (String) -> InputStream)` 供测试注入失败路径，生产的 `warmUp()` 委托到 `context.assets.open(it)`。
 
 ## 4. 词典资产与构建工具
 
@@ -92,20 +106,23 @@ JMESIN（EDRP 维护，基于 jmdict 的 CC-BY-SA 4.0 派生词典）。取 `<k_
 
 ```
 输入：--input <本地 jmesin/jmdict XML>
+      --frequency <可选：表层\t词频 的 TSV，用于截断与读音加权>
 输出：app/src/main/assets/reading/words.gz    // 表层\t读音，一行一条，按表层排序
       app/src/main/assets/reading/kanji.gz    // 汉字\t读音
       app/src/main/assets/reading/NOTICE.txt
 参数：--max-entries N   超预算时按词频截断（不静默塞爆 APK）
 ```
 
+处理顺序是固定的，不能边解析边截断：解析并去重 → （有 `--frequency` 时）按词频排序 → 按 `--max-entries` 截断 → 从**截断后**的词条派生单字表 → 按表层排序 → gzip。截断若发生在派生之前，单字表就会建立在「文件顺序的前 N 条」这种毫无代表性的子集上；未提供 `--frequency` 时脚本必须在 stderr 明确警告截断是按词库顺序而非词频进行的。
+
 处理规则：
 
 1. 只保留表层含汉字的词条（纯假名词对注音无用）
 2. 按 (表层, 读音) 去重；同一表层多个读音时保留词频最高的一条
-3. 单字回退表由词库自动派生：同一汉字在所有词条中出现时，取按词频加权最高的读音。这样少一个外部依赖、且与词库版本自洽
+3. 单字回退表**只**从「表层恰含一个汉字」的词条派生，取词频加权最高的读音。多汉字词条（`日本語`）的读音根本不构成该字的候选音，混进来会把「日」读成「にほんご」这类污染结果。这样仍少一个外部依赖、且与词库版本自洽。
 4. 排序后 gzip 写入
 
-派生单字表的已知代价：「食」会派生成「しょく」而非「た」。可接受，因为送假名场景（食べる）本来就先被词级命中，单字表只兜底生僻字。
+派生单字表的已知代价：`食` 只会来自单词条 `食`/しょく 之类，而 `食べる` 不参与派生。可接受，因为送假名场景（食べる）本来就先被词级命中，单字表只兜底生僻字。
 
 ### 4.3 预算
 
@@ -154,18 +171,23 @@ while i < len:
 
 平假名以小字号紧贴汉字右侧，无括号、无分隔符、同色，继承现有的阴影与描边。
 
-字号必须用**相对单位**，这是刻意的：
+注音字号必须**按比例从所在行的字号推导**，这是刻意的；但两端的落地形式不同：
 
-- Compose：`SpanStyle(fontSize = 0.55.em)`，`em` 相对段落 `TextStyle.fontSize`
-- TextView：`RelativeSizeSpan(0.55f)`，相对 `textView.textSize`
+- Compose：构建器接收一个绝对 `TextUnit` 参数 `rubyFontSize`，由调用点用 `furiganaRubyFontSize(style) = style.fontSize * FURIGANA_READING_SCALE` 从**该行实际生效的** `TextStyle` 算出。不在 `SpanStyle` 里写 `.em` 相对单位——本项目锁的 Compose BOM（2024.02.00）下，`AnnotatedString` 里的相对字号在测量与绘制两条路径上的解析基准并不一致，会直接导致行高与实测高度对不上；传入 `style.fontSize` 又漏掉了 `lineHeight`/`MaterialTheme` 覆写。显式绝对值是唯一可靠的形状。
+- TextView：`RelativeSizeSpan(FURIGANA_READING_SCALE)`，天然相对 `textView.textSize`，无需换算。
 
-歌词字号本就是用户可调的（`LyricsPageSettings.fontSizeSp`、`FloatingLyricsSettings.size`），用相对单位即自动跟随，因此不需要新增「注音字号」设置项。
+歌词字号本就是用户可调的（`LyricsPageSettings.fontSizeSp`、`FloatingLyricsSettings.size`），比例常量即自动跟随，因此不需要新增「注音字号」设置项。副作用是测量与绘制必须使用同一个 `rubyFontSize`（见 §6.5 的测量行）。
 
 ### 6.2 硬约束
 
 **开关关闭、或该行不含日文段时，构建器输出必须与现状逐字节一致**（即等价于纯文本的 `AnnotatedString` / 纯 `String`）。这是防止新功能意外改变任何现有显示的安全网，由自动化测试守住。
 
-唯一允许的文本变化：开启注音且原文自带括号注音时（算法规则 ①），括号被吸收进读音——这是预期改进。
+允许两类文本变化，且只有这两类：
+
+1. 开启注音且原文自带括号注音时（算法规则 ①），括号被吸收进读音。
+2. `BILINGUAL` 模式下，中/日两段之间由现有 `displayText` 的单次 `\n` 拼接变成显式分段拼接——结果字符串相同。
+
+注意由此引出的一个必须防住的实现陷阱：`CHINESE` 模式下 `displaySegments` 是**空列表**（见 §6.4），外部抓取字幕同样不填段。任何「只看 segments」的渲染点会在中文模式下把整行渲染成空白。因此每个渲染与测量点都必须通过 `orPlainFallback(plain)` 兜底（见 §6.3），不允许直接消费可能为空的 segments。
 
 ### 6.3 共享构建器（`ui/common/FuriganaText.kt`，新建）
 
@@ -173,19 +195,39 @@ while i < len:
 
 ```kotlin
 /** 渲染注音所需的全部输入；无词典可用时 source 为 null，等价于不注音。 */
-data class FuriganaSpec(val enabled: Boolean, val source: ReadingSource?)
+data class FuriganaSpec(val enabled: Boolean, val source: ReadingSource?) {
+    companion object {
+        val NONE = FuriganaSpec(enabled = false, source = null)
+    }
+}
 ```
 
-`FuriganaSpec.NONE`（`enabled = false, source = null`）作为默认值，让任何未接入的调用点自动落在「无注音」行为上。
+`FuriganaSpec.NONE` 作为默认值，让任何未接入的调用点自动落在「无注音」行为上。
 
 构建器签名：
 
 ```kotlin
-fun buildFuriganaAnnotatedString(segments: List<DisplaySegment>, furigana: FuriganaSpec): AnnotatedString
-fun buildFuriganaSpanned(segments: List<DisplaySegment>, furigana: FuriganaSpec): CharSequence
+fun buildFuriganaAnnotatedString(
+    segments: List<DisplaySegment>,
+    plainFallback: String,
+    furigana: FuriganaSpec,
+    rubyFontSize: TextUnit,
+    separator: String = "\n"
+): AnnotatedString
+
+fun buildFuriganaSpanned(segments: List<DisplaySegment>, plainFallback: String, furigana: FuriganaSpec): CharSequence
+
+/** 剥离读音后的纯文本；悬浮歌词的去重门与单测的逐字节断言都用它。 */
+fun furiganaPlainText(segments: List<DisplaySegment>, plainFallback: String): String
+
+/** 段的空/blank 过滤 + 空列表兜底，三个构建器共用同一份实现。 */
+private fun resolveSegments(segments: List<DisplaySegment>, plainFallback: String) =
+    segments.filter { it.text.isNotBlank() }.orPlainFallback(plainFallback)
 ```
 
-内部对每个 `japanese == true` 的段调用 `annotateLine`，其余段直接取文本。段间以 `\n` 连接（沿用现有双语拼接行为）；中文段永不送进词典。
+内部对每个 `japanese == true` 的段调用 `annotateLine`，其余段直接取文本。段间以 `separator` 连接（默认 `\n`，沿用现有双语拼接行为）；中文段永不送进词典。
+
+`plainFallback` 不是可选的装饰，而是 §6.2 那个空段陷阱的结构性封堵：构建器一律先 `resolveSegments`，segments 为空（CHINESE 模式、外部字幕）时退化为单段纯文本，因此**任何**渲染点都不可能画出空白行。`separator` 的存在是因为跑马灯接缝把多行压成一行（见 §6.5）。
 
 `furigana.enabled == false` 时构建器**不做任何词典调用**，直接走纯文本路径——这是 §6.2 硬约束的实现保证，也让关闭状态下开销严格为零。
 
@@ -205,25 +247,49 @@ data class SubtitleEntry(
 data class DisplaySegment(val text: String, val japanese: Boolean)
 ```
 
-`SubtitleDisplayMode.kt:43` 的 `withDisplayMode(mode)` **签名不变**，只额外填 `displaySegments`：
+```kotlin
+/** 按显示模式与双语顺序取该条字幕的语言分段。 */
+fun SubtitleEntry.displaySegmentsFor(mode: SubtitleDisplayMode, order: SubtitleBilingualOrder): List<DisplaySegment>
+
+/** segments 可能为空（CHINESE 模式、外部抓取字幕），渲染点必须兜底。 */
+fun List<DisplaySegment>.orPlainFallback(plain: String): List<DisplaySegment> =
+    if (isNotEmpty()) this else listOf(DisplaySegment(plain, japanese = false))
+```
+
+`displayText` / `withDisplayMode` 在本文确认后又因「双语上下顺序」特性变成了 `(mode, order)` 两参数（`order: SubtitleBilingualOrder`，默认 `JAPANESE_FIRST`），所以「签名不变」这句已不成立；本功能的约束改为**分段顺序必须与 `displayText(mode, order)` 的压平顺序逐字等价**，且该顺序参数没有默认值，漏传会被编译器点名。双语顺序特性是本功能的硬前置。
+
+`withDisplayMode(mode, order)` 只在 JAPANESE/BILINGUAL 分支额外填 `displaySegments`：
 
 | 模式 | segments |
 |---|---|
-| `CHINESE` | 空列表，且沿用现有「原样返回同一个 list」的短路（现有测试 `withDisplayMode_chineseReturnsSameList` 必须继续通过） |
-| `JAPANESE` | `[(text=日文, japanese=true)]` |
-| `BILINGUAL` | `[(中文, false), (日文, true)]`；「日文为空 / 中文为空 / 中日相同」三条退化分支的段与 `text` 一致 |
+| `CHINESE` | 空列表，且沿用现有「CHINESE 不压平文本」的短路语义（现有测试 `withDisplayMode_chineseReturnsSameList` 比较内容而非引用，必须继续通过） |
+| `JAPANESE` | `[(text=日文, japanese=true)]`；无日文原文时退回 `[(中文, false)]` |
+| `BILINGUAL` | 顺序随 `order`：`JAPANESE_FIRST` → `[(日文, true), (中文, false)]`，`CHINESE_FIRST` → `[(中文, false), (日文, true)]`；「日文为空 / 中文为空 / 中日相同」三条退化分支的段与 `text` 一致 |
+
+CHINESE 分支不填段（它不把整轨压平，改它会破坏上述测试），所以经 `withDisplayMode` 处理过的列表读 `entry.displaySegments`，而悬浮歌词那种拿到的是**未压平原始列表**的路径必须读 `displaySegmentsFor(mode, order)`；两者对 CHINESE 都返回空列表，由 `orPlainFallback` 完成兜底。
 
 `text` 字段的压平行为一个字都不改。因此 `GeneratedSubtitleFileExporter.kt:195`（导出）、`SubtitleHash`、`LyricsLoader.normalizeAndDistinct`、Room 实体全部不感知注音，导出文件保持纯文本。
 
-### 6.5 渲染接入点（共 5 处）
+### 6.5 渲染接入点（共 6 处）
 
 | 文件 | 现状 | 改动 |
 |---|---|---|
 | `AppleLyricsView.kt:138` | 无注音参数 | 增加 `furigana: FuriganaSpec`，**不给默认值**，强制两个调用点（`LyricsPage.kt:142`、`NowPlayingSurfaceComponents.kt:263`）显式传，杜绝漏改 |
-| `AppleLyricsView.kt:904` `LyricLineText` | `text: String`，调用点 L613 | 改 `AnnotatedString`；色散动画那两次 ghost `Text` 自动继承 span 样式 |
-| `AppleLyricsView.kt:885` `measureLyricItemHeight` | `AnnotatedString(entry.text)` | 直接 measure 同一个 AnnotatedString，测量与绘制一致 |
-| `NowPlayingControls.kt:681` `sourceContent` | `current: String` + `upcoming: List<String>`，L799/L806 用它测高 | `current`/`upcoming` 类型换成 `AnnotatedString`；`NowPlayingMultilineLyrics`（`nowplaying/NowPlayingMultilineLyrics.kt:37`）参数跟着换；不留 plain 副本 |
-| `FloatingLyricsView.kt:89` `updateLine(text: String, cue)` | 内部 `textView.text = text`，L89 有 `currentText == text` 去重门 | 参数改 `CharSequence`；**去重门继续比纯文本**（`SpannedString` 无值语义，直接比会导致每帧重复 setText）；`PlaybackService.kt:1290` 改为构建 Spanned |
+| `AppleLyricsView.kt:904` `LyricLineText` | `text: String`，调用点 L613 | 改 `AnnotatedString`；色散动画那两次 ghost `Text` 自动继承 span 样式。L613 处把内联的 `MaterialTheme.typography.titleLarge.copy(...)` 提为 `val lineStyle`，注音字号由它经 `furiganaRubyFontSize(lineStyle)` 得出 |
+| `AppleLyricsView.kt:885` `measureLyricItemHeight` | `AnnotatedString(entry.text)` | measure 同一个 AnnotatedString，且 `rubyFontSize` 由**入参 `measurementStyle`** 算出——测量与绘制必须用同一个绝对字号，否则行高会跳 |
+| `NowPlayingControls.kt:681` `sourceContent` | `current: String` + `upcoming: List<String>`，L799/L806 用它测高 | **保持 `String` 不变**，见下方说明；改为在测量与绘制这两个真正使用文本的地方按需派生 `AnnotatedString` |
+| `NowPlayingControls.kt:1050` `SlowMarqueeText` / `Text` | `text = line.text`（`String`），`marqueeCurrentLine = true`（`NowPlayingScreen.kt:2440`）时当前行被压成单行滚动 | 两个分支都改为接收 `AnnotatedString`；`SlowMarqueeText` 首参类型跟着换。跑马灯路径必须用 `marqueeLyricText(...)`（逐段 `normalizeSingleLineText` + `separator = " "`），普通路径用 `upcomingLyricText(...)`（逐段 `normalizeMultilineText`） |
+| `FloatingLyricsView.kt:89` `updateLine(text: String, cue)` | 内部 `textView.text = text`，L89 有 `currentText == text` 去重门 | 增加可选 `annotated: CharSequence?` 参数，`textView.text` 用 `annotated ?: text`；**去重门继续比纯文本**（`SpannedString` 无值语义，直接比会导致每帧重复 setText）；`PlaybackService.kt:1290` 改为构建 Spanned |
+
+`NowPlayingControls` 这一行与原设计的差别是刻意的，理由是性能与正确性两重：
+
+`sourceContent` / `settledContent` / `renderedLines` 全都住在 `remember(...)` 里，并且被用作动画与几何的 key。`AnnotatedString` 的 `equals` 会把 span 一起比较，把它塞进 `remember` 键或 `NowPlayingLyricsTrackLine` 这类参与 `key(...)` 与差分的状态里，等于每帧都可能判定「变了」，触发整条歌词的重新测量与动画重启。而这些 remember 块的键（`currentFontSize`、`upcomingStyle.fontSize` 等）并不包含注音开关，改了类型也不会自动失效——这是最难发现的一类回归。
+
+因此让文本状态继续存 `String`（现状形状一字不改），只在 `measureTrackGeometry`（`:868`、`:881-888`）与绘制（`:1050-1070`）两处经 `annotateLine` 的行级 LRU 派生注音结果。LRU 命中时开销接近零，而状态图、动画键与 `NowPlayingMultilineLyrics` 的 `MultilineCue` 全部保持原样。
+
+`NowPlayingMultilineLyrics`（`nowplaying/NowPlayingMultilineLyrics.kt:37`）同样只在 `Text` 处派生：参数表加无默认值的 `furigana: FuriganaSpec`，而 `MultilineCue(key, text: String)` 一个字都不改——它是 `Crossfade` 的 `targetState`，改成 `AnnotatedString` 会连带影响淡入淡出的差分判定。
+
+`normalizeSingleLineText` / `normalizeMultilineText`（`:1145-1165`，现为 `private`）需要改为 `internal`，因为跑马灯与预览的注音文本必须**逐段**做同样的规范化后再拼接。直接对原始 segments 注音会跳过规范化，破坏 §6.2 的逐字节一致：现状是「先拼成 `"$中文\n$日文"` 再整串规范化」，注音版必须复现同样的结果。
 
 ### 6.6 数据流单一来源
 
@@ -265,9 +331,9 @@ suspend fun setJapaneseFuriganaEnabled(enabled: Boolean)
 | 汉字查不到任何读音 | 该汉字正常显示，不注音 |
 | 用户关闭开关 | 不加载 assets，不解析词典，渲染层零开销 |
 
-**关键规则：词典未就绪或加载失败时不写 LRU 缓存。** 这让降级链自动愈合——预热完成后下一次渲染自然带上注音，不需要「就绪后通知 UI 刷新」的额外状态机制。代价是最早一两句可能没注音。
+**关键规则：词典未就绪或加载失败时不写 LRU 缓存。** 判定依据是 `source.ready`（§3.1），不是「这一行的结果里有没有读音」——后者会把预热期的正常空命中永久缓存。这让降级链自动愈合——预热完成后下一次渲染自然带上注音，不需要「就绪后通知 UI 刷新」的额外状态机制。代价是最早一两句可能没注音。
 
-行级缓存：由 §3.1 的 `annotateLine` 独占持有（`LinkedHashMap(accessOrder = true)`，容量约 2000，加锁保护），Compose 与 `PlaybackService` 共享同一份缓存实现，不各自造缓存。
+行级缓存：由 §3.1 的 `annotateLine` 独占持有（`LinkedHashMap(accessOrder = true)`，容量约 2000，加锁保护），Compose 与 `PlaybackService` 共享同一份缓存实现，不各自造缓存。`NowPlayingControls` 的按需派生（§6.5）正是靠这份缓存把重复计算压掉。
 
 ## 9. 测试计划
 
@@ -283,9 +349,12 @@ suspend fun setJapaneseFuriganaEnabled(enabled: Boolean)
    - 四种括号形态各一条
    - `annotateLine`：同一行二次调用命中缓存；`source` 为 null 时**不写缓存**（预热完成后同一次调用能立刻拿到注音）
 2. **`util/SubtitleDisplayModeTest` 扩展**：三种模式的 segments 结果；CHINESE 段为空（老断言保持不动）；BILINGUAL 退化分支段与 `text` 一致
-3. **`data/reading/ReadingDictionaryTest`**：排序数组二分前缀命中、(表层, 读音) 去重、单字读音按词频派生、资产损坏时的降级路径
-4. **`ui/common/FuriganaTextTest`**（Robolectric）：`FuriganaSpec(enabled = false, source = 可用词典)` 时输出与纯文本逐字节相等；开启时 span 只覆盖读音区间、`fontSize == 0.55.em`；`RelativeSizeSpan` 起止一致；双语段只在 `japanese == true` 那段产生 span
-5. **设置往返**：照 `data/local/datastore/SearchCacheStoreTest` 的 `PreferenceDataStoreFactory.createDataStore` 模式，断默认值 `false`、key 名稳定、set 后读回
+3. **`data/reading/ReadingDictionaryIndexTest`**（纯 JVM）：排序数组二分前缀命中、(表层, 读音) 去重、单字表只从恰含一个汉字的表层派生、`ready` 在空索引时为 false
+4. **`data/reading/ReadingDictionaryTest`**：经 `warmUpWith` 注入失败流，断「只尝试一次」（含 `attempted` 守卫计数）、失败后 `ready` 保持 false、不抛异常
+5. **`ui/common/FuriganaTextTest`**（Robolectric）：`FuriganaSpec(enabled = false, source = 可用词典)` 时输出与纯文本逐字节相等；开启时 span 只覆盖读音区间、字号等于传入的 `rubyFontSize`；`RelativeSizeSpan` 起止一致；双语段只在 `japanese == true` 那段产生 span；segments 为空 / 全 blank 时退回 `plainFallback`；`separator = " "` 的跑马灯形态
+6. **设置往返**：照 `ui/library/LibraryPreferencesStoreTest.kt` 的范式（`@RunWith(RobolectricTestRunner::class)` + `PreferenceDataStoreFactory.create` + 临时目录），断默认值 `false`、key 名稳定、set 后读回。注意 `data/local/datastore/SearchCacheStoreTest.kt` 是纯函数测试，不是 DataStore 往返范式，不要照它写
+7. **渲染接缝各测两条**：`AppleLyricsViewFuriganaTest`（ViewModel 组装的 `FuriganaSpec` 是否走词典 + 测量与绘制共用的 `lyricLineAnnotated`）、`NowPlayingLyricsFuriganaTest`（`upcomingLyricText` 与 `marqueeLyricText` 的规范化结果必须与现状逐字节一致）、`FloatingLyricsFuriganaTest`（去重门比纯文本、`annotated` 为空时行为不变）。不尝试在 Robolectric 里渲染完整 `AppleLyricsView`
+8. **`BundledReadingDictionaryAssetTest`**（Robolectric，真实 assets）：`words.gz`/`kanji.gz` 能解压、格式合法、条数与体积在 §4.3 预算内
 
 ## 10. 真机验收清单
 
@@ -304,20 +373,21 @@ suspend fun setJapaneseFuriganaEnabled(enabled: Boolean)
 新建：
 
 - `app/src/main/java/com/asmr/player/util/JapaneseReadingSupport.kt`
+- `app/src/main/java/com/asmr/player/data/reading/ReadingDictionaryIndex.kt`
 - `app/src/main/java/com/asmr/player/data/reading/ReadingDictionary.kt`
 - `app/src/main/java/com/asmr/player/ui/common/FuriganaText.kt`
 - `tools/build_reading_dict.py`
 - `app/src/main/assets/reading/{words.gz,kanji.gz,NOTICE.txt}`
-- 对应的 5 个测试文件
+- 测试：`util/JapaneseReadingSupportTest.kt`、`data/reading/ReadingDictionaryIndexTest.kt`、`data/reading/ReadingDictionaryTest.kt`、`ui/common/FuriganaTextTest.kt`、`data/local/datastore/FuriganaSettingStoreTest.kt`、`ui/player/AppleLyricsViewFuriganaTest.kt`、`ui/player/NowPlayingLyricsFuriganaTest.kt`、`service/FloatingLyricsFuriganaTest.kt`、`data/reading/BundledReadingDictionaryAssetTest.kt`（`util/SubtitleDisplayModeTest.kt` 为追加方法，现有断言不动）
 
 修改：
 
 - `util/SubtitleParser.kt`（`SubtitleEntry` 加字段）
-- `util/SubtitleDisplayMode.kt`（`DisplaySegment`、`FuriganaSpec`、填段逻辑）
+- `util/SubtitleDisplayMode.kt`（`DisplaySegment`、`orPlainFallback`、`displaySegmentsFor`、`FuriganaSpec`、填段逻辑）
 - `data/local/datastore/SettingsDataStore.kt`（新 key）
 - `ui/settings/SettingsViewModel.kt`、`ui/settings/SettingsScreen.kt`
 - `ui/player/LyricsViewModel.kt`、`ui/player/AppleLyricsView.kt`、`ui/player/LyricsPage.kt`
-- `ui/player/nowplaying/NowPlayingControls.kt`、`ui/player/nowplaying/NowPlayingSurfaceComponents.kt`、`ui/player/nowplaying/NowPlayingMultilineLyrics.kt`
+- `ui/player/nowplaying/NowPlayingControls.kt`（含 `normalizeSingleLineText`/`normalizeMultilineText` 改 `internal`、文件内私有的 `SlowMarqueeText` 首参改 `AnnotatedString`）、`ui/player/nowplaying/NowPlayingSurfaceComponents.kt`、`ui/player/nowplaying/NowPlayingMultilineLyrics.kt`
 - `service/FloatingLyricsView.kt`、`service/PlaybackService.kt`
 - `README.md`（特性列表 + 词典署名）
 
