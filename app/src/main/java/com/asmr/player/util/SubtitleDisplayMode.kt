@@ -95,6 +95,7 @@ fun SubtitleEntry.displaySegmentsFor(
         SubtitleDisplayMode.BILINGUAL -> when {
             japanese.isBlank() -> listOf(DisplaySegment(chinese, japanese = chinese.looksJapanese()))
             chinese.isBlank() -> listOf(DisplaySegment(japanese, japanese = true))
+            // 两栏字面相同 → 单行显示。内容仍是日文时照常注音（japaneseText 常被填成原文）。
             japanese == chinese -> listOf(DisplaySegment(chinese, japanese = chinese.looksJapanese()))
             else -> if (order == SubtitleBilingualOrder.JAPANESE_FIRST) bilingual.reversed() else bilingual
         }

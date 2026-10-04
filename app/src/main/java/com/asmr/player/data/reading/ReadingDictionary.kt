@@ -68,7 +68,6 @@ class ReadingDictionary @Inject constructor(
             }
             val parsed = ReadingDictionaryIndex.parse(words, kanji)
             check(parsed.ready) { "furigana dictionary is empty" }
-            Log.i(TAG, "DIAG dictionary ready: ${words.size} word lines, ${kanji.size} kanji lines")
             parsed
         }
 

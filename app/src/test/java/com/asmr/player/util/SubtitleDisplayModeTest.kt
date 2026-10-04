@@ -118,9 +118,16 @@ class SubtitleDisplayModeTest {
     @Test
     fun displaySegmentsFor_bilingualDegenerateCasesStaySingleSegmentAndMatchText() {
         val identical = SubtitleEntry(0L, 1_000L, "同じ", "同じ")
+        // 两栏字面相同仍是单行；内容是日文（含假名）就照常标日文，否则这类字幕永远注不上音。
         assertEquals(
-            listOf(DisplaySegment("同じ", japanese = false)),
+            listOf(DisplaySegment("同じ", japanese = true)),
             identical.displaySegmentsFor(SubtitleDisplayMode.BILINGUAL, SubtitleBilingualOrder.JAPANESE_FIRST)
+        )
+        // 相同但确实是中文 → 仍然挡住，不进词典。
+        assertEquals(
+            listOf(DisplaySegment("中文", japanese = false)),
+            SubtitleEntry(0L, 1_000L, "中文", "中文")
+                .displaySegmentsFor(SubtitleDisplayMode.BILINGUAL, SubtitleBilingualOrder.JAPANESE_FIRST)
         )
         assertEquals(
             listOf(DisplaySegment("中文", japanese = false)),
@@ -130,6 +137,36 @@ class SubtitleDisplayModeTest {
         assertEquals(
             listOf(DisplaySegment("日文", japanese = true)),
             SubtitleEntry(0L, 1_000L, "", "日文")
+                .displaySegmentsFor(SubtitleDisplayMode.BILINGUAL, SubtitleBilingualOrder.JAPANESE_FIRST)
+        )
+    }
+
+    @Test
+    fun displaySegmentsFor_japanesePrimarySubtitleInMainFieldIsStillMarkedJapanese() {
+        // 日文播客/AI 生成字幕常常把日文放在 text 字段、japaneseText 留空。
+        // 若按字段一律当中文处理，这类字幕永远进不了词典（真机上表现为「开关开了但没注音」）。
+        val japaneseInMainField = SubtitleEntry(0L, 1_000L, "先週はもうアップロードせずに")
+        for (mode in listOf(SubtitleDisplayMode.JAPANESE, SubtitleDisplayMode.BILINGUAL)) {
+            assertEquals(
+                listOf(DisplaySegment("先週はもうアップロードせずに", japanese = true)),
+                japaneseInMainField.displaySegmentsFor(mode, SubtitleBilingualOrder.JAPANESE_FIRST)
+            )
+        }
+        // 纯中文仍必须挡住：中文句子不含假名。
+        assertEquals(
+            listOf(DisplaySegment("中文", japanese = false)),
+            SubtitleEntry(0L, 1_000L, "中文")
+                .displaySegmentsFor(SubtitleDisplayMode.BILINGUAL, SubtitleBilingualOrder.JAPANESE_FIRST)
+        )
+        // 中文模式永远空分段（验收：中文模式三处都无注音）。
+        assertEquals(
+            emptyList<DisplaySegment>(),
+            japaneseInMainField.displaySegmentsFor(SubtitleDisplayMode.CHINESE, SubtitleBilingualOrder.JAPANESE_FIRST)
+        )
+        // japaneseText 被填成原文（两栏字面相同）时同样要能注音——真机数据就是这条路径。
+        assertEquals(
+            listOf(DisplaySegment("先週はもうアップロードせずに", japanese = true)),
+            SubtitleEntry(0L, 1_000L, "先週はもうアップロードせずに", "先週はもうアップロードせずに")
                 .displaySegmentsFor(SubtitleDisplayMode.BILINGUAL, SubtitleBilingualOrder.JAPANESE_FIRST)
         )
     }
