@@ -103,4 +103,12 @@ object SettingsKeys {
     val CUSTOM_AI_API_URL = stringPreferencesKey("custom_ai_api_url")
     val CUSTOM_AI_API_MODEL = stringPreferencesKey("custom_ai_api_model")
     val CUSTOM_AI_SEND_DEEPSEEK_PARAMS = booleanPreferencesKey("custom_ai_send_deepseek_params")
+
+    // 每个端点预设各自独立保存配置（不再共用一份），切换预设只改激活项。
+    val CUSTOM_AI_SELECTED_PRESET = stringPreferencesKey("custom_ai_selected_preset")
+
+    fun customAiPresetUrlKey(presetId: String) = stringPreferencesKey("custom_ai_preset_${presetId}_url")
+    fun customAiPresetModelKey(presetId: String) = stringPreferencesKey("custom_ai_preset_${presetId}_model")
+    fun customAiPresetDeepSeekParamsKey(presetId: String) =
+        booleanPreferencesKey("custom_ai_preset_${presetId}_deepseek_params")
 }

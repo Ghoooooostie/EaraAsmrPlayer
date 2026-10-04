@@ -2664,6 +2664,111 @@ internal fun DirectoryActionGroupButton(
     }
 }
 
+/**
+ * 字幕批量操作入口：把“生成并翻译 / 只转录 / 只翻译”收敛到一个下拉里。
+ * 只翻译不需要转录模型，所以即使模型未就绪也保持可选（点击后由仓库层校验后端）。
+ */
+@Composable
+internal fun DirectorySubtitleActions(
+    triggerText: String,
+    generateEnabled: Boolean,
+    onGenerate: (() -> Unit)?,
+    transcribeEnabled: Boolean,
+    onTranscribe: (() -> Unit)?,
+    translateEnabled: Boolean,
+    onTranslate: (() -> Unit)?,
+    onUnavailable: (() -> Unit)?,
+) {
+    val colorScheme = AsmrTheme.colorScheme
+    val hasGenerate = onGenerate != null
+    val hasTranscribe = onTranscribe != null
+    val hasTranslate = onTranslate != null
+    if (!hasGenerate && !hasTranscribe && !hasTranslate) return
+    var menuExpanded by rememberSaveable { mutableStateOf(false) }
+    val optionsCount = (if (hasGenerate) 1 else 0) + (if (hasTranscribe) 1 else 0) + (if (hasTranslate) 1 else 0)
+    Box {
+        DirectoryActionGroupButton(
+            text = triggerText,
+            icon = Icons.Rounded.Translate,
+            enabled = generateEnabled || transcribeEnabled || translateEnabled,
+            onClick = {
+                if (optionsCount > 1) {
+                    menuExpanded = true
+                } else {
+                    when {
+                        hasGenerate -> onGenerate?.invoke()
+                        hasTranscribe -> onTranscribe?.invoke()
+                        hasTranslate -> onTranslate?.invoke()
+                    }
+                }
+            },
+            onDisabledClick = onUnavailable
+        )
+        DropdownMenu(
+            expanded = menuExpanded,
+            onDismissRequest = { menuExpanded = false },
+            modifier = Modifier.background(dynamicPageContainerColor(colorScheme))
+        ) {
+            DropdownMenuItem(
+                text = {
+                    Text(
+                        "生成并翻译字幕",
+                        color = if (generateEnabled) colorScheme.textPrimary else colorScheme.textTertiary
+                    )
+                },
+                onClick = {
+                    menuExpanded = false
+                    if (generateEnabled) onGenerate?.invoke() else onUnavailable?.invoke()
+                },
+                leadingIcon = {
+                    Icon(
+                        Icons.Rounded.Subtitles,
+                        contentDescription = null,
+                        tint = if (generateEnabled) colorScheme.textSecondary else colorScheme.textTertiary
+                    )
+                }
+            )
+            if (hasTranscribe) {
+                DropdownMenuItem(
+                    text = {
+                        Text(
+                            "只转录字幕",
+                            color = if (transcribeEnabled) colorScheme.textPrimary else colorScheme.textTertiary
+                        )
+                    },
+                    onClick = {
+                        menuExpanded = false
+                        if (transcribeEnabled) onTranscribe?.invoke() else onUnavailable?.invoke()
+                    },
+                    leadingIcon = {
+                        Icon(
+                            Icons.Rounded.Audiotrack,
+                            contentDescription = null,
+                            tint = if (transcribeEnabled) colorScheme.textSecondary else colorScheme.textTertiary
+                        )
+                    }
+                )
+            }
+            if (hasTranslate) {
+                DropdownMenuItem(
+                    text = { Text("只翻译字幕", color = colorScheme.textPrimary) },
+                    onClick = {
+                        menuExpanded = false
+                        onTranslate?.invoke()
+                    },
+                    leadingIcon = {
+                        Icon(
+                            Icons.Rounded.Translate,
+                            contentDescription = null,
+                            tint = colorScheme.textSecondary
+                        )
+                    }
+                )
+            }
+        }
+    }
+}
+
 @Composable
 internal fun DirectoryBatchBarEmbeddedV3(
     targets: List<PlaylistAddTarget>,
@@ -3160,8 +3265,12 @@ internal fun DirectoryBatchBarEmbeddedV5(
     showTranslateAction: Boolean = false,
     subtitleGenerationText: String = "生成并翻译字幕",
     subtitleGenerationEnabled: Boolean = false,
-    onGenerateSubtitles: () -> Unit = {},
-    onSubtitleGenerationUnavailable: (() -> Unit)? = null
+    onGenerateSubtitles: (() -> Unit)? = null,
+    onSubtitleGenerationUnavailable: (() -> Unit)? = null,
+    canTranscribeSubtitles: Boolean = false,
+    onTranscribeSubtitles: (() -> Unit)? = null,
+    canTranslateSubtitles: Boolean = false,
+    onTranslateSubtitles: (() -> Unit)? = null
 ) {
     val mediaItems = remember(targets) { targets.map { it.toMediaItem() } }
     val hasMediaItems = mediaItems.isNotEmpty()
@@ -3220,23 +3329,27 @@ internal fun DirectoryBatchBarEmbeddedV5(
                     enabled = hasMediaItems,
                     onClick = { onAddMediaItemsToQueue(mediaItems) }
                 )
-                if (showTranslateAction) {
-                    DirectoryActionGroupButton(
-                        text = subtitleGenerationText,
-                        icon = Icons.Rounded.Translate,
-                        enabled = subtitleGenerationEnabled,
-                        onClick = onGenerateSubtitles,
-                        onDisabledClick = onSubtitleGenerationUnavailable
-                    )
-                }
+                DirectorySubtitleActions(
+                    triggerText = subtitleGenerationText,
+                    generateEnabled = subtitleGenerationEnabled,
+                    onGenerate = onGenerateSubtitles,
+                    transcribeEnabled = subtitleGenerationEnabled,
+                    onTranscribe = onTranscribeSubtitles.takeIf { canTranscribeSubtitles },
+                    translateEnabled = canTranslateSubtitles,
+                    onTranslate = onTranslateSubtitles.takeIf { canTranslateSubtitles },
+                    onUnavailable = onSubtitleGenerationUnavailable
+                )
             }
-        } else if (showTranslateAction) {
-            DirectoryActionGroupButton(
-                text = subtitleGenerationText,
-                icon = Icons.Rounded.Translate,
-                enabled = subtitleGenerationEnabled,
-                onClick = onGenerateSubtitles,
-                onDisabledClick = onSubtitleGenerationUnavailable
+        } else if (showTranslateAction || canTranscribeSubtitles || canTranslateSubtitles) {
+            DirectorySubtitleActions(
+                triggerText = subtitleGenerationText,
+                generateEnabled = subtitleGenerationEnabled,
+                onGenerate = onGenerateSubtitles,
+                transcribeEnabled = subtitleGenerationEnabled,
+                onTranscribe = onTranscribeSubtitles.takeIf { canTranscribeSubtitles },
+                translateEnabled = canTranslateSubtitles,
+                onTranslate = onTranslateSubtitles.takeIf { canTranslateSubtitles },
+                onUnavailable = onSubtitleGenerationUnavailable
             )
         }
     }
@@ -3259,6 +3372,13 @@ internal fun DirectoryBrowserPanelV4(
     subtitleGenerationForCurrentDirectoryEnabled: Boolean = false,
     onGenerateSubtitlesForSelectedFiles: ((List<DirectoryFileItem>) -> Unit)? = null,
     canGenerateSubtitleForSelectedFile: ((DirectoryFileItem) -> Boolean)? = null,
+    localSubtitleTrackIds: Set<Long> = emptySet(),
+    onTranscribeSubtitlesForCurrentDirectory: (() -> Unit)? = null,
+    onTranscribeSubtitlesForSelectedFiles: ((List<DirectoryFileItem>) -> Unit)? = null,
+    canTranscribeSubtitleForSelectedFile: ((DirectoryFileItem) -> Boolean)? = null,
+    onTranslateSubtitlesForCurrentDirectory: (() -> Unit)? = null,
+    onTranslateSubtitlesForSelectedFiles: ((List<DirectoryFileItem>) -> Unit)? = null,
+    canTranslateSubtitleForSelectedFile: ((DirectoryFileItem) -> Boolean)? = null,
     subtitleModelAvailable: Boolean = true,
     onSubtitleGenerationUnavailable: (() -> Unit)? = null,
     animateIntro: Boolean = true,
@@ -3345,6 +3465,23 @@ internal fun DirectoryBrowserPanelV4(
         }
         Unit
     }
+    val hasTranscribeTargets = hasSubtitleGenerationTargets
+    val hasTranslateTargets = if (selectionMode) {
+        val predicate = canTranslateSubtitleForSelectedFile
+        predicate != null && selectedFiles.any(predicate)
+    } else {
+        onTranslateSubtitlesForCurrentDirectory != null
+    }
+    val onTranscribeSubtitles: (() -> Unit)? = if (selectionMode) {
+        onTranscribeSubtitlesForSelectedFiles?.let { cb -> { cb(selectedFiles) } }
+    } else {
+        onTranscribeSubtitlesForCurrentDirectory
+    }
+    val onTranslateSubtitles: (() -> Unit)? = if (selectionMode) {
+        onTranslateSubtitlesForSelectedFiles?.let { cb -> { cb(selectedFiles) } }
+    } else {
+        onTranslateSubtitlesForCurrentDirectory
+    }
     LaunchedEffect(preferredPath) {
         preferredPathState = preferredPath.trim().trim('/')
     }
@@ -3407,10 +3544,14 @@ internal fun DirectoryBrowserPanelV4(
                     showTranslateAction = showTranslateAction,
                     subtitleGenerationText = if (selectionMode) "翻译选中" else "批量翻译",
                     subtitleGenerationEnabled = subtitleGenerationEnabled,
-                    onGenerateSubtitles = onGenerateSubtitles,
+                    onGenerateSubtitles = onGenerateSubtitles.takeIf { showTranslateAction },
                     onSubtitleGenerationUnavailable = onSubtitleGenerationUnavailable.takeIf {
                         hasSubtitleGenerationTargets && !subtitleModelAvailable
-                    }
+                    },
+                    canTranscribeSubtitles = hasTranscribeTargets,
+                    onTranscribeSubtitles = onTranscribeSubtitles,
+                    canTranslateSubtitles = hasTranslateTargets,
+                    onTranslateSubtitles = onTranslateSubtitles
                 )
                 if (onTogglePreferredPath != null && !selectionMode) {
                     val preferredIcon = if (isPreferredPath) Icons.Rounded.Bookmark else Icons.Rounded.BookmarkBorder
@@ -3586,6 +3727,8 @@ internal fun DirectoryFileRow(
     onAddToPlaylist: (() -> Unit)? = null,
     onGenerateSubtitles: (() -> Unit)? = null,
     subtitleGenerationEnabled: Boolean = true,
+    onTranscribeSubtitles: (() -> Unit)? = null,
+    onTranslateSubtitles: (() -> Unit)? = null,
     onManageTags: (() -> Unit)? = null,
     onRemoveFromAlbum: (() -> Unit)? = null,
     onDelete: (() -> Unit)? = null,
@@ -3614,7 +3757,7 @@ internal fun DirectoryFileRow(
     }
 
     val showPrimaryAction = file.isPlayable
-    val showMenu = showPrimaryAction || onDownload != null || onAddToQueue != null || onAddToPlaylist != null || onGenerateSubtitles != null || onManageTags != null || onRemoveFromAlbum != null || onDelete != null
+    val showMenu = showPrimaryAction || onDownload != null || onAddToQueue != null || onAddToPlaylist != null || onGenerateSubtitles != null || onTranscribeSubtitles != null || onTranslateSubtitles != null || onManageTags != null || onRemoveFromAlbum != null || onDelete != null
     val showTrailing = selectionMode || onSetAsCover != null || file.showSubtitleStamp || showMenu
     val rowContainerColor = if (selected) {
         colorScheme.primary.copy(alpha = if (colorScheme.isDark) 0.18f else 0.09f)
@@ -3822,6 +3965,64 @@ internal fun DirectoryFileRow(
                                             }
                                         )
                                     }
+                                    // 只转录字幕（常驻，不可用时置灰）
+                                    DropdownMenuItem(
+                                        text = {
+                                            Text(
+                                                "只转录字幕",
+                                                color = if (onTranscribeSubtitles != null) {
+                                                    colorScheme.textSecondary
+                                                } else {
+                                                    colorScheme.textTertiary
+                                                }
+                                            )
+                                        },
+                                        onClick = {
+                                            onTranscribeSubtitles?.invoke()
+                                            showMenuExpanded = false
+                                        },
+                                        enabled = onTranscribeSubtitles != null,
+                                        leadingIcon = {
+                                            Icon(
+                                                Icons.Rounded.Audiotrack,
+                                                contentDescription = null,
+                                                tint = if (onTranscribeSubtitles != null) {
+                                                    colorScheme.textSecondary
+                                                } else {
+                                                    colorScheme.textTertiary
+                                                }
+                                            )
+                                        }
+                                    )
+                                    // 只翻译字幕（常驻，不可用时置灰）
+                                    DropdownMenuItem(
+                                        text = {
+                                            Text(
+                                                "只翻译字幕",
+                                                color = if (onTranslateSubtitles != null) {
+                                                    colorScheme.textSecondary
+                                                } else {
+                                                    colorScheme.textTertiary
+                                                }
+                                            )
+                                        },
+                                        onClick = {
+                                            onTranslateSubtitles?.invoke()
+                                            showMenuExpanded = false
+                                        },
+                                        enabled = onTranslateSubtitles != null,
+                                        leadingIcon = {
+                                            Icon(
+                                                Icons.Rounded.Translate,
+                                                contentDescription = null,
+                                                tint = if (onTranslateSubtitles != null) {
+                                                    colorScheme.textSecondary
+                                                } else {
+                                                    colorScheme.textTertiary
+                                                }
+                                            )
+                                        }
+                                    )
                                     if (onGenerateSubtitles != null) {
                                         val subtitleGenerationColor = if (subtitleGenerationEnabled) {
                                             colorScheme.textSecondary

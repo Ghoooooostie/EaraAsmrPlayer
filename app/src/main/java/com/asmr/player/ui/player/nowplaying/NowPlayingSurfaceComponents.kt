@@ -83,6 +83,7 @@ import com.asmr.player.ui.library.TagAssignDialog
 import com.asmr.player.service.AudioOutputRouteKind
 import com.asmr.player.ui.theme.AsmrTheme
 import com.asmr.player.util.Formatting
+import com.asmr.player.util.FuriganaSpec
 import com.asmr.player.util.SubtitleEntry
 import com.asmr.player.util.SubtitleIndexFinder
 import kotlin.math.abs
@@ -209,6 +210,7 @@ internal fun NowPlayingLyricsSurface(
     lyricItemInnerHorizontalPadding: Dp = if (isLandscape) 8.dp else 10.dp,
     contentKey: String? = null,
     contentVisible: Boolean = true,
+    furigana: FuriganaSpec,
     modifier: Modifier = Modifier
 ) {
     val surfaceAlpha by animateFloatAsState(
@@ -273,6 +275,7 @@ internal fun NowPlayingLyricsSurface(
                 interactionEnabled = effectiveInteractionEnabled,
                 stableFocusAnchor = stableFocusAnchor,
                 expandedHomeVisualEffects = expandedHomeVisualEffects,
+                furigana = furigana,
                 itemOuterHorizontalPadding = lyricItemOuterHorizontalPadding,
                 itemInnerHorizontalPadding = lyricItemInnerHorizontalPadding,
                 contentKey = contentKey,

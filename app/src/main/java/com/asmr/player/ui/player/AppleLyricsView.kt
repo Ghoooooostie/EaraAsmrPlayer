@@ -74,12 +74,16 @@ import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.asmr.player.data.settings.LyricsPageSettings
+import com.asmr.player.ui.common.furiganaRubyFontSize
+import com.asmr.player.ui.common.buildFuriganaAnnotatedString
 import com.asmr.player.ui.common.rememberCalmScrollableFlingBehavior
 import com.asmr.player.ui.theme.AsmrTheme
 import com.asmr.player.util.Formatting
+import com.asmr.player.util.FuriganaSpec
 import com.asmr.player.util.SubtitleEntry
 import com.asmr.player.util.SubtitleIndexFinder
 import kotlinx.coroutines.delay
@@ -146,6 +150,7 @@ internal fun AppleLyricsView(
     modifier: Modifier = Modifier,
     isLandscape: Boolean = false,
     settings: LyricsPageSettings = LyricsPageSettings(),
+    furigana: FuriganaSpec,
     interactionEnabled: Boolean = true,
     stableFocusAnchor: Boolean = false,
     itemOuterHorizontalPadding: Dp = if (isLandscape) 10.dp else 14.dp,
@@ -270,6 +275,7 @@ internal fun AppleLyricsView(
                     entry = entry,
                     textMeasurer = textMeasurer,
                     measurementStyle = measurementStyle,
+                    furigana = furigana,
                     maxTextWidthPx = itemTextMaxWidthPx,
                     nominalItemHeightPx = nominalItemHeightPx,
                     innerVerticalPaddingPx = innerVerticalPaddingPx,
@@ -610,21 +616,22 @@ internal fun AppleLyricsView(
                             .padding(horizontal = itemInnerHorizontalPadding, vertical = itemInnerVerticalPadding)
                     ) {
                         val shadowColor = remember(color) { lyricShadowColor(color) }
+                        val lineStyle = MaterialTheme.typography.titleLarge.copy(
+                            fontWeight = if (isActive) FontWeight.ExtraBold else FontWeight.Medium,
+                            fontSize = fontSize,
+                            lineHeight = wrappedLineHeight,
+                            textAlign = textAlign,
+                            shadow = shadow
+                        )
                         LyricLineText(
-                            text = entry.text,
+                            text = lyricLineAnnotated(entry, furigana, furiganaRubyFontSize(lineStyle)),
                             color = color,
                             shadowColor = shadowColor,
                             strokeWidthPx = strokeWidthPx,
                             dispersionProgress = focusEffect.dispersionProgress,
                             dispersionOffsetX = focusEffect.dispersionOffsetXDp.dp,
                             dispersionOffsetY = focusEffect.dispersionOffsetYDp.dp,
-                            style = MaterialTheme.typography.titleLarge.copy(
-                                fontWeight = if (isActive) FontWeight.ExtraBold else FontWeight.Medium,
-                                fontSize = fontSize,
-                                lineHeight = wrappedLineHeight,
-                                textAlign = textAlign,
-                                shadow = shadow
-                            ),
+                            style = lineStyle,
                             textAlign = textAlign
                         )
                     }
@@ -870,10 +877,23 @@ private suspend fun resetLyricWaveOffsets(
     }
 }
 
+/** 歌词行的展示文本：绘制与测量共用，避免行高与实际文本不一致。 */
+internal fun lyricLineAnnotated(
+    entry: SubtitleEntry,
+    furigana: FuriganaSpec,
+    rubyFontSize: TextUnit
+): AnnotatedString = buildFuriganaAnnotatedString(
+    segments = entry.displaySegments,
+    plainFallback = entry.text,
+    furigana = furigana,
+    rubyFontSize = rubyFontSize
+)
+
 private fun measuredLyricItemHeight(
     entry: SubtitleEntry?,
     textMeasurer: androidx.compose.ui.text.TextMeasurer,
     measurementStyle: TextStyle,
+    furigana: FuriganaSpec,
     maxTextWidthPx: Int,
     nominalItemHeightPx: Float,
     innerVerticalPaddingPx: Float,
@@ -882,7 +902,7 @@ private fun measuredLyricItemHeight(
 ): Float {
     if (entry == null) return nominalItemHeightPx
     val textLayout = textMeasurer.measure(
-        text = AnnotatedString(entry.text),
+        text = lyricLineAnnotated(entry, furigana, furiganaRubyFontSize(measurementStyle)),
         style = measurementStyle,
         constraints = Constraints(maxWidth = maxTextWidthPx)
     )
@@ -902,7 +922,7 @@ private fun lyricShadowColor(textColor: Color): Color {
 
 @Composable
 private fun LyricLineText(
-    text: String,
+    text: AnnotatedString,
     color: Color,
     shadowColor: Color,
     strokeWidthPx: Float,

@@ -270,7 +270,8 @@ class SubtitleTranslationClientTest {
         assertEquals("call-1", assistant.getAsJsonArray("tool_calls")[0].asJsonObject.get("id").asString)
         assertEquals("tool", tool.get("role").asString)
         assertEquals("call-1", tool.get("tool_call_id").asString)
-        assertEquals(3, toolResult.getAsJsonArray("japanese_subtitles").size())
+        // 窗口化后 read 只回传「剩余未翻译」的一窗（已确认 1 条，剩余 2 条）
+        assertEquals(2, toolResult.getAsJsonArray("japanese_subtitles").size())
         assertEquals(1, toolResult.getAsJsonArray("completed_chinese_subtitles").size())
         assertEquals(1, toolResult.get("completed_source_count").asInt)
         assertEquals(1, toolResult.get("next_untranslated_index").asInt)

@@ -25,6 +25,9 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import com.asmr.player.ui.common.buildFuriganaAnnotatedString
+import com.asmr.player.ui.common.furiganaRubyFontSize
+import com.asmr.player.util.FuriganaSpec
 import com.asmr.player.util.SubtitleEntry
 
 // 保留原有字幕区尺寸，移除操作栏后全部用于正文；尺寸仍不依赖当前字幕的行数。
@@ -38,6 +41,7 @@ internal fun NowPlayingMultilineLyrics(
     text: String,
     cueKey: SubtitleEntry?,
     style: TextStyle,
+    furigana: FuriganaSpec,
     colors: LyricReadableColors,
     centered: Boolean,
     interactionEnabled: Boolean,
@@ -79,7 +83,16 @@ internal fun NowPlayingMultilineLyrics(
                 verticalArrangement = Arrangement.Center
             ) {
                 Text(
-                    text = displayedCue.text,
+                    text = remember(displayedCue, furigana, style) {
+                        buildFuriganaAnnotatedString(
+                            segments = displayedCue.key?.displaySegments
+                                ?.map { segment -> segment.copy(text = normalizeMultilineText(segment.text)) }
+                                .orEmpty(),
+                            plainFallback = displayedCue.text,
+                            furigana = furigana,
+                            rubyFontSize = furiganaRubyFontSize(style)
+                        )
+                    },
                     style = style,
                     color = colors.activeText,
                     textAlign = if (centered) TextAlign.Center else TextAlign.Start,

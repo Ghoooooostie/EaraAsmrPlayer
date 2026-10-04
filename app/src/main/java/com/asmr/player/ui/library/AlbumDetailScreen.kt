@@ -498,8 +498,10 @@ internal fun albumHeaderDownloadEnabled(
     hasDlsitePlayTree: Boolean,
     hasResolvedInitialDlsiteTarget: Boolean,
     hasValidLocalRj: Boolean = false,
-    hasDlsitePlayCredentials: Boolean = true
+    hasDlsitePlayCredentials: Boolean = true,
+    hasOtomeKoeStream: Boolean = false
 ): Boolean {
+    if (hasOtomeKoeStream) return true
     return when (selectedTab) {
         0 -> hasValidLocalRj && (hasAsmrOneTree || (hasDlsitePlayCredentials && hasDlsitePlayTree))
         1 -> canUseAsmrOneOnlineTreeActions(selectedTab, hasAsmrOneTree)
@@ -1012,7 +1014,8 @@ fun AlbumDetailScreen(
                                 hasDlsitePlayTree = model.dlsitePlayTree.isNotEmpty(),
                                 hasResolvedInitialDlsiteTarget = resolvedInitialTarget,
                                 hasValidLocalRj = hasValidLocalRj,
-                                hasDlsitePlayCredentials = hasDlsitePlayCredentials
+                                hasDlsitePlayCredentials = hasDlsitePlayCredentials,
+                                hasOtomeKoeStream = !model.otomeKoeStreamUrl.isNullOrBlank()
                             )
                             val headerAlbum = headerAlbumForTab(tab)
                             val incrementalSource = when (tab) {
@@ -1050,12 +1053,15 @@ fun AlbumDetailScreen(
                                 onDlsiteLangSelected = { viewModel.selectDlsiteLanguage(it) },
                                 showSaveAction = tab != 2,
                                 onDownloadClick = {
-                                    incrementalSource?.let { source ->
+                                    if (incrementalSource != null && incrementalTree.isNotEmpty()) {
                                         prepareIncrementalAlbumAction(
                                             action = IncrementalAlbumAction.Download,
-                                            source = source,
+                                            source = incrementalSource,
                                             tree = incrementalTree
                                         )
+                                    } else if (!model.otomeKoeStreamUrl.isNullOrBlank()) {
+                                        // 无在线分轨树（如 OtomeKoe 单曲）时，直接下载其音频 + 封面。
+                                        viewModel.downloadOtomeKoeAudio()
                                     }
                                 },
                                 showDlsitePlayLossless = tab == 2,
@@ -1203,6 +1209,9 @@ fun AlbumDetailScreen(
                                 if (loadPlan.loadDlsitePlay) {
                                     viewModel.ensureDlsitePlayLoaded(showFailureMessage = selectedTab != 0)
                                 }
+                                // 按 RJ 打开（如剪贴板粘贴跳转）时主数据源可能没有该作品，
+                                // 必须主动探测 OtomeKoe，否则音频区永远不加载、整页空白。
+                                viewModel.ensureOtomeKoeLoaded()
                             }
 
                             val asmrOneTreeStateKey = asmrOneDirectoryTreeStateKey(

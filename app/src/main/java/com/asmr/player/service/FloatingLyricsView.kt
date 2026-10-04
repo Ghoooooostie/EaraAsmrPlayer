@@ -86,11 +86,12 @@ internal class FloatingLyricsView(context: Context) : FrameLayout(context) {
         invalidate()
     }
 
-    fun updateLine(text: String, cue: SubtitleEntry? = null) {
+    fun updateLine(text: String, cue: SubtitleEntry? = null, annotated: CharSequence? = null) {
+        // 去重只比纯文本：Spanned 没有值语义，直接比会导致每帧 setText。
         if (currentText == text && currentCue == cue) return
         currentText = text
         currentCue = cue
-        textView.text = text
+        textView.text = annotated ?: text
         resetScroll()
     }
 

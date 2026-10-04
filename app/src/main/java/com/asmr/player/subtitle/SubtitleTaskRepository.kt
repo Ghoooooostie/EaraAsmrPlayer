@@ -16,6 +16,7 @@ import com.asmr.player.data.local.db.entities.SubtitleTitleOwnerKind
 import com.asmr.player.data.local.db.entities.SubtitleTranslationSourceEntity
 import com.asmr.player.data.settings.CustomAiApiSettings
 import com.asmr.player.data.settings.SettingsKeys
+import com.asmr.player.data.settings.customAiDefaultPresetId
 import com.asmr.player.data.settings.normalizeCustomAiApiUrl
 import com.asmr.player.data.settings.settingsDataStore
 import java.io.File
@@ -103,17 +104,22 @@ internal class SubtitleTaskRepository private constructor(context: Context) {
 
     private suspend fun ensureTranslationBackendConfigured() {
         val prefs = appContext.settingsDataStore.data.first()
+        val selected = prefs[SettingsKeys.CUSTOM_AI_SELECTED_PRESET] ?: customAiDefaultPresetId()
+        val isDefault = selected == customAiDefaultPresetId()
         val customSettings = CustomAiApiSettings(
             enabled = prefs[SettingsKeys.CUSTOM_AI_API_ENABLED] ?: false,
-            apiUrl = prefs[SettingsKeys.CUSTOM_AI_API_URL] ?: "",
-            model = prefs[SettingsKeys.CUSTOM_AI_API_MODEL] ?: "",
-            sendDeepSeekParams = prefs[SettingsKeys.CUSTOM_AI_SEND_DEEPSEEK_PARAMS] ?: false
+            apiUrl = prefs[SettingsKeys.customAiPresetUrlKey(selected)]
+                .takeIf { !it.isNullOrBlank() } ?: if (isDefault) prefs[SettingsKeys.CUSTOM_AI_API_URL] ?: "" else "",
+            model = prefs[SettingsKeys.customAiPresetModelKey(selected)]
+                .takeIf { !it.isNullOrBlank() } ?: if (isDefault) prefs[SettingsKeys.CUSTOM_AI_API_MODEL] ?: "" else "",
+            sendDeepSeekParams = prefs[SettingsKeys.customAiPresetDeepSeekParamsKey(selected)]
+                ?: if (isDefault) prefs[SettingsKeys.CUSTOM_AI_SEND_DEEPSEEK_PARAMS] ?: false else false
         )
         check(
             hasUsableTranslationBackend(
                 deepSeekApiKeyConfigured = DeepSeekApiKeyStore.get(appContext).isConfigured(),
                 customAiApiSettings = customSettings,
-                customAiApiKeyConfigured = CustomAiApiKeyStore.get(appContext).isConfigured()
+                customAiApiKeyConfigured = CustomAiApiKeyStore.get(appContext).isConfigured(selected)
             )
         ) {
             if (customSettings.enabled) {
@@ -146,6 +152,27 @@ internal class SubtitleTaskRepository private constructor(context: Context) {
         }
     }
 
+    suspend fun enqueueTranscription(targets: List<SubtitleGenerationTarget>): SubtitleTaskHandle {
+        reconcileOnAppLaunch()
+        return enqueueMutex.withLock {
+            val normalized = targets.asSequence()
+                .filter { it.trackId > 0L }
+                .distinctBy(SubtitleGenerationTarget::trackId)
+                .toList()
+            require(normalized.isNotEmpty()) { "没有可转录的音频" }
+            val capability = SubtitleDeviceCapability.evaluate(appContext)
+            check(capability.supported) { capability.message }
+            check(SubtitleModelRepository.get(appContext).isModelAvailable()) {
+                SubtitleModelRepository.MODEL_REQUIRED_MESSAGE
+            }
+            enqueue(
+                targets = normalized.map { it.trackId to it.title },
+                origin = SubtitleTaskOrigin.GENERATED,
+                mode = SubtitleTaskMode.TRANSCRIPTION_ONLY
+            )
+        }
+    }
+
     suspend fun enqueueTranslation(target: SubtitleTranslationTarget): SubtitleTaskHandle {
         reconcileOnAppLaunch()
         return enqueueMutex.withLock {
@@ -156,6 +183,27 @@ internal class SubtitleTaskRepository private constructor(context: Context) {
             require(subtitles.any { it.text.isNotBlank() }) { "当前音轨没有可翻译的本地字幕" }
             enqueue(
                 targets = listOf(target.trackId to target.title),
+                origin = SubtitleTaskOrigin.MANUAL_TRANSLATION,
+                mode = SubtitleTaskMode.MANUAL
+            )
+        }
+    }
+
+    suspend fun enqueueTranslation(targets: List<SubtitleTranslationTarget>): SubtitleTaskHandle {
+        reconcileOnAppLaunch()
+        return enqueueMutex.withLock {
+            val normalized = targets.asSequence()
+                .filter { it.trackId > 0L }
+                .distinctBy(SubtitleTranslationTarget::trackId)
+                .toList()
+            val translatable = normalized.filter { target ->
+                database.trackDao().getSubtitlesForTrack(target.trackId).any { it.text.isNotBlank() }
+            }
+            require(translatable.isNotEmpty()) { "所选音轨没有可翻译的本地字幕" }
+            translatable.forEach { ensureTrackAlbumNotPolishing(it.trackId) }
+            ensureTranslationBackendConfigured()
+            enqueue(
+                targets = translatable.map { it.trackId to it.title },
                 origin = SubtitleTaskOrigin.MANUAL_TRANSLATION,
                 mode = SubtitleTaskMode.MANUAL
             )
@@ -209,10 +257,10 @@ internal class SubtitleTaskRepository private constructor(context: Context) {
                     trackPath = track.path,
                     mode = mode,
                     queueSequence = sequence,
-                    state = if (mode == SubtitleTaskMode.GENERATED) {
-                        SubtitleItemState.QUEUED_TRANSCRIPTION
-                    } else {
+                    state = if (mode == SubtitleTaskMode.MANUAL) {
                         SubtitleItemState.QUEUED_TRANSLATION
+                    } else {
+                        SubtitleItemState.QUEUED_TRANSCRIPTION
                     },
                     suspendedFromState = "",
                     transcriptionChunkCursor = 0,

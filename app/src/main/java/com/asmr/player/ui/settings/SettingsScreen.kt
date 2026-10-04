@@ -121,6 +121,9 @@ import com.asmr.player.ui.common.smoothScrollToTop
 import com.asmr.player.ui.common.withAddedBottomPadding
 import com.asmr.player.ui.common.collectAsStateWhileActive
 import com.asmr.player.ui.update.launchDownloadedApkInstall
+import androidx.compose.runtime.rememberCoroutineScope
+import com.asmr.player.data.settings.CUSTOM_AI_ENDPOINT_PRESETS
+import kotlinx.coroutines.launch
 import com.asmr.player.util.Formatting
 import com.asmr.player.util.SubtitleBilingualOrder
 import com.asmr.player.util.SubtitleDisplayMode
@@ -202,6 +205,7 @@ fun SettingsScreen(
     }
     val subtitleDisplayMode by viewModel.subtitleDisplayMode.collectAsStateWhileActive(lyricsDataActive)
     val subtitleBilingualOrder by viewModel.subtitleBilingualOrder.collectAsStateWhileActive(lyricsDataActive)
+    val japaneseFuriganaEnabled by viewModel.japaneseFuriganaEnabled.collectAsStateWhileActive(lyricsDataActive)
     val floatingLyricsEnabled by viewModel.floatingLyricsEnabled.collectAsStateWhileActive(lyricsDataActive)
     val floatingSettings by viewModel.floatingLyricsSettings.collectAsStateWhileActive(lyricsDataActive)
     val nowPlayingLyricsSettings by viewModel.nowPlayingLyricsSettings.collectAsStateWhileActive(lyricsDataActive)
@@ -233,6 +237,8 @@ fun SettingsScreen(
     val customAiApiKeyState by viewModel.customAiApiKeyState.collectAsStateWhileActive(translationDataActive)
     val translationApiTestState by viewModel.translationApiTestState.collectAsStateWhileActive(translationDataActive)
     val customAiApiModelsState by viewModel.customAiApiModelsState.collectAsStateWhileActive(translationDataActive)
+    val customAiSelectedPreset by viewModel.customAiSelectedPreset.collectAsStateWhileActive(translationDataActive)
+    val settingsScreenScope = rememberCoroutineScope()
     val updateState by viewModel.updateState.collectAsStateWhileActive(aboutDataActive)
     val autoUpdateCheckEnabled by viewModel.autoUpdateCheckEnabled.collectAsStateWhileActive(aboutDataActive)
     val scanRoots by libraryViewModel.scanRoots.collectAsStateWhileActive(localLibraryDataActive)
@@ -909,6 +915,23 @@ fun SettingsScreen(
                             HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.18f))
 
                             SettingsToggleRow(
+                                text = "日文汉字注音",
+                                checked = japaneseFuriganaEnabled,
+                                onCheckedChange = { viewModel.setJapaneseFuriganaEnabled(it) }
+                            )
+                            Text(
+                                text = if (subtitleDisplayMode == SubtitleDisplayMode.CHINESE) {
+                                    "当前字幕显示模式不含日文，切到「日文原文」或「中日双语」才会生效。"
+                                } else {
+                                    "在日文汉字的右侧以小字显示平假名读音，字号自动跟随歌词字号；不影响导出的字幕文件。"
+                                },
+                                style = MaterialTheme.typography.bodySmall,
+                                color = AsmrTheme.colorScheme.textSecondary
+                            )
+
+                            HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.14f))
+
+                            SettingsToggleRow(
                                 text = "开启悬浮歌词",
                                 checked = floatingLyricsEnabled,
                                 onCheckedChange = { viewModel.setFloatingLyricsEnabled(it) }
@@ -1165,6 +1188,14 @@ fun SettingsScreen(
                                         urlInput = customAiApiUrlInput,
                                         keyInput = customAiApiKeyInput
                                     )
+                                },
+                                selectedPreset = customAiSelectedPreset,
+                                onPresetSelected = { presetId ->
+                                    settingsScreenScope.launch {
+                                        val profile = viewModel.selectAndLoadCustomAiPreset(presetId)
+                                        customAiApiUrlInput = profile.apiUrl
+                                        customAiApiModelInput = profile.model
+                                    }
                                 },
                                 onSendDeepSeekParamsChanged = viewModel::setCustomAiSendDeepSeekParams,
                                 onFinalPolishEnabledChanged = viewModel::setDeepSeekFinalPolishEnabled,
@@ -1702,24 +1733,7 @@ internal fun DeepSeekTranslationSettingsSection(
     )
 }
 
-/** 自定义 AI 端点快捷预设：OpenAI 兼容服务的常用入口。 */
-internal enum class CustomAiEndpointPreset(
-    val label: String,
-    val url: String,
-    val defaultModel: String
-) {
-    Groq(
-        label = "Groq",
-        url = "https://api.groq.com/openai/v1/chat/completions",
-        defaultModel = "llama-3.3-70b-versatile"
-    ),
-    GoogleGemini(
-        label = "Google Gemini",
-        url = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
-        // gemini-2.5-flash 已对部分账号下线，接口建议使用 gemini-3.8-flash
-        defaultModel = "gemini-3.8-flash"
-    )
-}
+/** 自定义 AI 端点快捷预设的视觉与交互由 [CUSTOM_AI_ENDPOINT_PRESETS] 驱动（按预设分桶独立保存）。 */
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -1741,6 +1755,8 @@ internal fun CustomAiApiSettingsSection(
     onSaveEndpoint: () -> Unit,
     onSaveApiKey: () -> Unit,
     onRefreshModels: () -> Unit,
+    selectedPreset: String,
+    onPresetSelected: (String) -> Unit,
     onSendDeepSeekParamsChanged: (Boolean) -> Unit,
     onFinalPolishEnabledChanged: (Boolean) -> Unit,
     activeTipKey: String? = null,
@@ -1772,14 +1788,11 @@ internal fun CustomAiApiSettingsSection(
             horizontalArrangement = Arrangement.spacedBy(8.dp),
             verticalArrangement = Arrangement.spacedBy(4.dp)
         ) {
-            CustomAiEndpointPreset.entries.forEach { preset ->
+            CUSTOM_AI_ENDPOINT_PRESETS.forEach { preset ->
                 ThemeModeChip(
                     label = preset.label,
-                    selected = urlInput.trim() == preset.url,
-                    onClick = {
-                        onUrlInputChanged(preset.url)
-                        if (modelInput.isBlank()) onModelInputChanged(preset.defaultModel)
-                    }
+                    selected = selectedPreset == preset.id,
+                    onClick = { onPresetSelected(preset.id) }
                 )
             }
         }

@@ -9,6 +9,7 @@ internal object SubtitleTaskOrigin {
 
 internal object SubtitleTaskMode {
     const val GENERATED = "GENERATED"
+    const val TRANSCRIPTION_ONLY = "TRANSCRIPTION_ONLY"
     const val MANUAL = "MANUAL"
 }
 

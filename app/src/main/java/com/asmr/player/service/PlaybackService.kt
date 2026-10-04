@@ -40,6 +40,8 @@ import androidx.media3.datasource.cache.CacheDataSource
 import com.asmr.player.MainActivity
 import com.asmr.player.data.local.db.AppDatabase
 import com.asmr.player.data.local.datastore.SettingsDataStore
+import com.asmr.player.data.reading.ReadingDictionary
+import com.asmr.player.ui.common.buildFuriganaSpanned
 import com.asmr.player.data.local.db.entities.TrackPlaybackProgressEntity
 import com.asmr.player.data.remote.auth.DlsiteAuthStore
 import com.asmr.player.data.remote.auth.buildDlsiteCookieHeader
@@ -84,7 +86,9 @@ import com.asmr.player.util.SubtitleBilingualOrder
 import com.asmr.player.util.SubtitleDisplayMode
 import com.asmr.player.util.SubtitleEntry
 import com.asmr.player.util.SubtitleIndexFinder
+import com.asmr.player.util.displaySegmentsFor
 import com.asmr.player.util.displayText
+import com.asmr.player.util.FuriganaSpec
 import dagger.hilt.android.AndroidEntryPoint
 import androidx.media3.datasource.TransferListener
 import androidx.media3.datasource.DataSpec
@@ -160,6 +164,7 @@ class PlaybackService : MediaSessionService() {
     private var floatingLyricsEnabled: Boolean = false
     @Volatile private var subtitleDisplayMode: SubtitleDisplayMode = SubtitleDisplayMode.CHINESE
     @Volatile private var subtitleBilingualOrder: SubtitleBilingualOrder = SubtitleBilingualOrder.JAPANESE_FIRST
+    @Volatile private var furigana: FuriganaSpec = FuriganaSpec.NONE
     private var overlay: FloatingLyricsOverlay? = null
     private var pauseOnOutputDisconnectEnabled: Boolean = true
     private var resumeOnOutputConnectEnabled: Boolean = false
@@ -235,6 +240,9 @@ class PlaybackService : MediaSessionService() {
 
     @Inject
     lateinit var settingsDataStore: SettingsDataStore
+
+    @Inject
+    lateinit var readingDictionary: ReadingDictionary
 
     @Inject
     lateinit var database: AppDatabase
@@ -550,6 +558,14 @@ class PlaybackService : MediaSessionService() {
                 subtitleBilingualOrder = order
                 lastLyricIndex = Int.MIN_VALUE
             }
+        }
+        serviceScope.launch {
+            settingsDataStore.japaneseFuriganaEnabled
+                .distinctUntilChanged()
+                .collect { enabled ->
+                    furigana = FuriganaSpec(enabled = enabled, source = if (enabled) readingDictionary else null)
+                    if (enabled) readingDictionary.warmUp()
+                }
         }
         serviceScope.launch {
             combine(
@@ -1295,9 +1311,17 @@ class PlaybackService : MediaSessionService() {
         if (idx != lastLyricIndex) {
             lastLyricIndex = idx
 
-            val current = lyrics.getOrNull(idx)?.displayText(subtitleDisplayMode, subtitleBilingualOrder).orEmpty().ifBlank { " " }
+            val entry = lyrics.getOrNull(idx)
+            val current = entry?.displayText(subtitleDisplayMode, subtitleBilingualOrder).orEmpty().ifBlank { " " }
+            val annotated = entry?.let {
+                buildFuriganaSpanned(
+                    segments = it.displaySegmentsFor(subtitleDisplayMode, subtitleBilingualOrder),
+                    plainFallback = current,
+                    furigana = furigana
+                )
+            }
             withContext(Dispatchers.Main.immediate) {
-                if (overlayNeeded) overlay?.updateLine(current, lyrics.getOrNull(idx))
+                if (overlayNeeded) overlay?.updateLine(text = current, cue = entry, annotated = annotated)
             }
         }
 

@@ -89,6 +89,7 @@ import com.asmr.player.playback.MediaItemFactory
 import com.asmr.player.subtitle.SubtitleDeviceCapability
 import com.asmr.player.subtitle.SubtitleFailureMessages
 import com.asmr.player.subtitle.SubtitleGenerationTarget
+import com.asmr.player.subtitle.SubtitleTranslationTarget
 import com.asmr.player.subtitle.SubtitleTaskRepository
 import com.asmr.player.subtitle.SubtitleModelRepository
 import com.asmr.player.subtitle.SubtitleModelInstallationState
@@ -309,6 +310,54 @@ internal fun AlbumLocalBreadcrumbTabV2(
             }
         }
     }
+    val startSubtitleTranscription: (List<Track>) -> Unit = { tracks ->
+        val targets = tracks.distinctBy { it.id }.map { track ->
+            SubtitleGenerationTarget(trackId = track.id, title = track.title)
+        }
+        if (targets.isNotEmpty()) {
+            scope.launch {
+                try {
+                    val handle = SubtitleTaskRepository.get(context).enqueueTranscription(targets)
+                    onSubtitleGenerationQueued(
+                        if (handle.reusedExisting) "所选音频已有可继续的字幕任务" else "已加入转录任务队列"
+                    )
+                } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                    throw cancelled
+                } catch (error: Throwable) {
+                    val message = error.message?.takeIf { it.isNotBlank() } ?: "无法开始转录字幕"
+                    if (SubtitleFailureMessages.isUserActionWarning(message)) {
+                        onSubtitleGenerationUnavailable(message)
+                    } else {
+                        onSubtitleGenerationError(message)
+                    }
+                }
+            }
+        }
+    }
+    val startSubtitleTranslation: (List<Track>) -> Unit = { tracks ->
+        val targets = tracks.distinctBy { it.id }.map { track ->
+            SubtitleTranslationTarget(trackId = track.id, title = track.title)
+        }
+        if (targets.isNotEmpty()) {
+            scope.launch {
+                try {
+                    val handle = SubtitleTaskRepository.get(context).enqueueTranslation(targets)
+                    onSubtitleGenerationQueued(
+                        if (handle.reusedExisting) "所选音频已有可继续的字幕任务" else "已加入翻译任务队列"
+                    )
+                } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                    throw cancelled
+                } catch (error: Throwable) {
+                    val message = error.message?.takeIf { it.isNotBlank() } ?: "无法开始翻译字幕"
+                    if (SubtitleFailureMessages.isUserActionWarning(message)) {
+                        onSubtitleGenerationUnavailable(message)
+                    } else {
+                        onSubtitleGenerationError(message)
+                    }
+                }
+            }
+        }
+    }
     LazyColumn(
         modifier = Modifier
             .fillMaxSize(),
@@ -372,6 +421,44 @@ internal fun AlbumLocalBreadcrumbTabV2(
                             unavailableTrackIds = emptySet()
                         ) != null
                     } else null,
+                    localSubtitleTrackIds = subtitleTrackIds,
+                    onTranscribeSubtitlesForCurrentDirectory = if (subtitleFeatureSupported) {
+                        { startSubtitleTranscription(currentDirectorySubtitleGenerationTracks) }
+                    } else null,
+                    onTranscribeSubtitlesForSelectedFiles = if (subtitleFeatureSupported) { selectedFiles ->
+                        startSubtitleTranscription(
+                            selectedFiles.mapNotNull { file ->
+                                subtitleGenerationTrackForFile(
+                                    file = file,
+                                    unavailableTrackIds = emptySet()
+                                )
+                            }
+                        )
+                    } else null,
+                    canTranscribeSubtitleForSelectedFile = if (subtitleFeatureSupported) { file ->
+                        subtitleGenerationTrackForFile(
+                            file = file,
+                            unavailableTrackIds = emptySet()
+                        ) != null
+                    } else null,
+                    onTranslateSubtitlesForCurrentDirectory = run {
+                        val tracks = currentDirectorySubtitleGenerationTracks.filter { it.id in subtitleTrackIds }
+                        if (tracks.isNotEmpty()) { { startSubtitleTranslation(tracks) } } else null
+                    },
+                    onTranslateSubtitlesForSelectedFiles = { selectedFiles ->
+                        val tracks = selectedFiles.mapNotNull { file ->
+                            subtitleTranslationTrackForFile(file = file, localSubtitleTrackIds = subtitleTrackIds)
+                        }
+                        if (tracks.isNotEmpty()) {
+                            startSubtitleTranslation(tracks)
+                        }
+                    },
+                    canTranslateSubtitleForSelectedFile = { file ->
+                        subtitleTranslationTrackForFile(
+                            file = file,
+                            localSubtitleTrackIds = subtitleTrackIds
+                        ) != null
+                    },
                     subtitleModelAvailable = subtitleModelAvailable,
                     onSubtitleGenerationUnavailable = {
                         onSubtitleGenerationUnavailable(
@@ -521,6 +608,27 @@ internal fun AlbumLocalBreadcrumbTabV2(
                                 }
                             } else null,
                             subtitleGenerationEnabled = subtitleModelAvailable,
+                            onTranscribeSubtitles = if (subtitleFeatureSupported) {
+                                subtitleGenerationTrackForFile(
+                                    file = file,
+                                    unavailableTrackIds = emptySet()
+                                )?.let { subtitleTranscriptionTrack ->
+                                    {
+                                        if (subtitleModelAvailable) {
+                                            startSubtitleTranscription(listOf(subtitleTranscriptionTrack))
+                                        } else {
+                                            onSubtitleGenerationUnavailable(SubtitleModelRepository.MODEL_REQUIRED_MESSAGE)
+                                        }
+                                    }
+                                }
+                            } else null,
+                            onTranslateSubtitles = if (file.track?.id in subtitleTrackIds) {
+                                file.track?.let { subtitleTrack ->
+                                    {
+                                        startSubtitleTranslation(listOf(subtitleTrack))
+                                    }
+                                }
+                            } else null,
                             onManageTags = track?.let { if (!isOnlineTrackPath(it.path)) { { onManageTrackTags(it) } } else null },
                             onRemoveFromAlbum = track?.let { { onRemoveTrack(it) } },
                             onDelete = if (file.fileType != TreeFileType.Audio) {

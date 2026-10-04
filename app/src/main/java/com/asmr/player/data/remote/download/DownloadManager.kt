@@ -19,6 +19,7 @@ import com.asmr.player.data.local.db.entities.SubtitleEntity
 import com.asmr.player.data.local.db.entities.TrackEntity
 import com.asmr.player.data.local.db.AppDatabaseProvider
 import com.asmr.player.data.local.library.LocalAlbumMergeService
+import com.asmr.player.util.DlsiteAntiHotlink
 import com.asmr.player.util.SubtitleEntry
 import com.asmr.player.util.DlsiteWorkNo
 import com.asmr.player.util.OtomeKoeMedia
@@ -1036,6 +1037,16 @@ class DownloadWorker(context: Context, parameters: WorkerParameters) : Coroutine
                 baseClient.newBuilder().cookieJar(sessionCookieJar).build()
             } else {
                 baseClient
+            }
+            // 图片类资源（DLSite 样图 / OtomeKoe 封面）常带防盗链，需补充站点级 Headers。
+            // DLSite 图片需 Referer=www.dlsite.com（覆盖上面音频用的 play.dlsite.com）。
+            val host = runCatching { url.toHttpUrl().host }.getOrNull()?.lowercase()
+            DlsiteAntiHotlink.headersForImageUrl(url).forEach { (name, value) ->
+                requestBuilder.header(name, value)
+            }
+            // OtomeKoe 媒体域名（封面 / 图片）需携带站点 Referer，否则 CDN 返回 403。
+            if (host != null && OtomeKoeMedia.isRefererRequiredHost(host)) {
+                requestBuilder.header("Referer", NetworkHeaders.REFERER_OTOMEKOE)
             }
             if (existingBytes > 0L && !isHlsSource) {
                 requestBuilder.addHeader("Range", "bytes=$existingBytes-")

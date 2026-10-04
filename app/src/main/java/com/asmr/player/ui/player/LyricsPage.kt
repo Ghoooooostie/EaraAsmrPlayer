@@ -152,6 +152,7 @@ internal fun LyricsPage(
                     modifier = Modifier.fillMaxSize(),
                     isLandscape = isLandscape,
                     settings = lyricsPageSettings,
+                    furigana = uiState.furigana,
                     contentKey = uiState.contentKey,
                     contentVisible = !uiState.isLoading
                 )

@@ -23,6 +23,7 @@ import com.asmr.player.hotlistening.HotListeningApi
 import com.asmr.player.util.AppErrorMessageFormatter
 import com.asmr.player.util.DlsiteWorkNo
 import com.asmr.player.util.MessageManager
+import com.asmr.player.util.OtomeKoeMedia
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.compose.runtime.Immutable
@@ -676,17 +677,48 @@ class SearchViewModel @Inject constructor(
                 )
             }
         }
-        val result = dlsiteScraper.search(
-            keyword = keywordWithBlockedTerms,
-            page = page,
-            order = order.dlsiteOrder,
-            locale = resolveSearchRequestLocale(currentLocale, chineseTranslatedOnly),
-            presaleOnly = presaleOnly,
-            chineseTranslatedOnly = chineseTranslatedOnly,
-            hasSubtitle = appliedHasSubtitle,
-            allAges = appliedAllAges
-        )
-        return SearchPageResult(items = result.items, canGoNext = result.canGoNext)
+        return coroutineScope {
+            val dlsiteDeferred = async {
+                dlsiteScraper.search(
+                    keyword = keywordWithBlockedTerms,
+                    page = page,
+                    order = order.dlsiteOrder,
+                    locale = resolveSearchRequestLocale(currentLocale, chineseTranslatedOnly),
+                    presaleOnly = presaleOnly,
+                    chineseTranslatedOnly = chineseTranslatedOnly,
+                    hasSubtitle = appliedHasSubtitle,
+                    allAges = appliedAllAges
+                )
+            }
+            // 标准（全部作品）搜索同时并入 OtomeKoe 结果；被 Cloudflare 拦截或超时时静默跳过。
+            val otomeKoeDeferred = if (
+                normalizedKeyword.isNotBlank() &&
+                selectedFilter == SearchFilterOption.Standard
+            ) {
+                async {
+                    withTimeoutOrNull(OTOME_KOE_MERGE_TIMEOUT_MS) {
+                        try {
+                            otomeKoeClient.search(normalizedKeyword, page)
+                                .items
+                                .map { it.toSearchAlbum() }
+                        } catch (error: CancellationException) {
+                            throw error
+                        } catch (error: Throwable) {
+                            Log.d("SearchViewModel", "OtomeKoe merge skipped: ${error.message}")
+                            emptyList()
+                        }
+                    }.orEmpty()
+                }
+            } else {
+                null
+            }
+            val dlsiteResult = dlsiteDeferred.await()
+            val otomeKoeItems = otomeKoeDeferred?.await().orEmpty()
+            SearchPageResult(
+                items = dlsiteResult.items + otomeKoeItems,
+                canGoNext = dlsiteResult.canGoNext
+            )
+        }
     }
 
     private fun startEnrichDlsiteDetails(
@@ -701,6 +733,7 @@ class SearchViewModel @Inject constructor(
         enrichJob?.cancel()
         enrichJob = viewModelScope.launch {
             val enrichTargets = baseItems
+                .filter { it.otomeKoeStreamUrl.isNullOrBlank() }
                 .mapNotNull { it.rjCode.ifBlank { it.workId }.trim().uppercase().takeIf(String::isNotBlank) }
                 .distinct()
                 .toSet()
@@ -736,6 +769,8 @@ class SearchViewModel @Inject constructor(
             coroutineScope {
                 val sem = Semaphore(3)
                 val deferreds = baseItems.mapIndexedNotNull { index, base ->
+                    // OtomeKoe 在线结果自带元数据，不参与 DLsite 详情补全，避免被 DLsite 数据覆盖。
+                    if (!base.otomeKoeStreamUrl.isNullOrBlank()) return@mapIndexedNotNull null
                     val rj = base.rjCode.ifBlank { base.workId }.trim().uppercase()
                     if (rj.isBlank() || rj !in enrichTargets) return@mapIndexedNotNull null
                     async(enrichDispatcher) {
@@ -1252,6 +1287,7 @@ class SearchViewModel @Inject constructor(
     private companion object {
         private const val ASMR_ONE_NEGATIVE_CACHE_TTL_MS = 5 * 60 * 1_000L
         private const val COLLECTED_WORK_NO_RESOLVE_TIMEOUT_MS = 3_000L
+        private const val OTOME_KOE_MERGE_TIMEOUT_MS = 4_000L
     }
 
     /** 从搜索结果直接下载 OtomeKoe 在线音频（HLS/m3u8 → .aac）。 */
@@ -1313,9 +1349,12 @@ internal fun WorkDetailsResponse.resolvedWorkNo(): String {
 }
 
 internal fun OtomeKoePost.toSearchAlbum(): Album {
+    // 搜索列表不解析音频流，但流地址可由 RJ 直接推导（固定模式），据此补全，
+    // 以便搜索结果能识别 OtomeKoe 来源并提供在线下载入口。
     val streamUrl = audioStreamUrls
         .firstOrNull { it.contains(".m3u8", ignoreCase = true) }
         ?: audioStreamUrls.firstOrNull()
+        ?: rjCode.trim().takeIf { it.isNotBlank() }?.let { OtomeKoeMedia.streamUrlFor(it) }
     return Album(
         title = title.trim().ifBlank { rjCode },
         path = "",

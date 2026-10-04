@@ -63,10 +63,12 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -91,11 +93,14 @@ import com.asmr.player.playback.PlaybackSnapshot
 import com.asmr.player.ui.common.EqualizerPanel
 import com.asmr.player.ui.common.rememberProtectedAppVolumeChangeState
 import com.asmr.player.ui.common.DiscPlaceholder
+import com.asmr.player.ui.common.buildFuriganaAnnotatedString
+import com.asmr.player.ui.common.furiganaRubyFontSize
 import com.asmr.player.ui.common.smoothScrollToIndex
 import com.asmr.player.ui.library.TagAssignDialog
 import com.asmr.player.service.AudioOutputRouteKind
 import com.asmr.player.ui.theme.AsmrTheme
 import com.asmr.player.util.Formatting
+import com.asmr.player.util.FuriganaSpec
 import com.asmr.player.util.SubtitleEntry
 import com.asmr.player.util.SubtitleIndexFinder
 import kotlin.math.abs
@@ -639,6 +644,61 @@ internal fun fittingUpcomingLyricCount(
     return count
 }
 
+/**
+ * 歌词轨道里某一行的展示文本。测量与绘制共用，保证行高与文本一致。
+ * 注音不存进预览内容对象：那些对象的 equals 参与 remember key，
+ * 存 AnnotatedString 会让滚动时每帧重算测量。
+ *
+ * 分段必须逐段过 [normalizeMultilineText]：现有预览文本走的是一条压空白+去 BOM 的规则，
+ * 直接从分段拼接会绕开它，导致「开关关了输出却变了」。
+ * [fallback] 同时是「取不到行」和「该行分段全空」两种情况的兜底文本（修订 6）。
+ */
+internal fun upcomingLyricText(
+    sortedLyrics: List<SubtitleEntry>,
+    index: Int,
+    fallback: String,
+    furigana: FuriganaSpec,
+    rubyFontSize: TextUnit
+): AnnotatedString {
+    val entry = sortedLyrics.getOrNull(index)
+    if (entry == null) {
+        return buildFuriganaAnnotatedString(emptyList(), fallback, furigana, rubyFontSize)
+    }
+    return buildFuriganaAnnotatedString(
+        segments = entry.displaySegments
+            .map { segment -> segment.copy(text = normalizeMultilineText(segment.text)) },
+        plainFallback = entry.text,
+        furigana = furigana,
+        rubyFontSize = rubyFontSize
+    )
+}
+
+/**
+ * 跑马灯渲染点的展示文本：与 [upcomingLyricText] 同一套规则，
+ * 只是逐段按 normalizeSingleLineText 折叠、用空格连接——
+ * 因为那个渲染点今天显示的就是整行折叠后的单行文本，注音必须挂在同一份文本上。
+ */
+internal fun marqueeLyricText(
+    sortedLyrics: List<SubtitleEntry>,
+    index: Int,
+    fallback: String,
+    furigana: FuriganaSpec,
+    rubyFontSize: TextUnit
+): AnnotatedString {
+    val entry = sortedLyrics.getOrNull(index)
+    if (entry == null) {
+        return buildFuriganaAnnotatedString(emptyList(), normalizeSingleLineText(fallback), furigana, rubyFontSize, separator = " ")
+    }
+    return buildFuriganaAnnotatedString(
+        segments = entry.displaySegments
+            .map { segment -> segment.copy(text = normalizeSingleLineText(segment.text)) },
+        plainFallback = normalizeSingleLineText(entry.text),
+        furigana = furigana,
+        rubyFontSize = rubyFontSize,
+        separator = " "
+    )
+}
+
 @Composable
 internal fun NowPlayingLyricsPreview(
     lyrics: List<SubtitleEntry>,
@@ -660,6 +720,7 @@ internal fun NowPlayingLyricsPreview(
     contentTopPadding: Dp = 0.dp,
     onCurrentLineAnchorChanged: ((Float) -> Unit)? = null,
     emptyText: String = "当前音频暂无同步歌词",
+    furigana: FuriganaSpec,
     modifier: Modifier = Modifier
 ) {
     val sortedLyrics = remember(lyrics) {
@@ -735,6 +796,7 @@ internal fun NowPlayingLyricsPreview(
             centered = centered,
             interactionEnabled = interactionEnabled,
             onOpenLyrics = onOpenLyrics,
+            furigana = furigana,
             modifier = modifier.then(
                 if (onCurrentLineAnchorChanged != null) {
                     Modifier.onGloballyPositioned { onCurrentLineAnchorChanged(it.boundsInRoot().top) }
@@ -781,7 +843,8 @@ internal fun NowPlayingLyricsPreview(
             contentTopPaddingPx,
             verticalSpacing,
             density.density,
-            density.fontScale
+            density.fontScale,
+            furigana
         ) {
             if (upcomingCount != null) {
                 candidateLimit
@@ -796,7 +859,7 @@ internal fun NowPlayingLyricsPreview(
                     maxWidth = constraints.maxWidth
                 )
                 val currentHeightPx = textMeasurer.measure(
-                    text = androidx.compose.ui.text.AnnotatedString(sourceContent.current),
+                    text = upcomingLyricText(sortedLyrics, sourceContent.activeIndex, sourceContent.current, furigana, furiganaRubyFontSize(currentStyle)),
                     style = currentStyle,
                     overflow = TextOverflow.Ellipsis,
                     softWrap = true,
@@ -805,7 +868,7 @@ internal fun NowPlayingLyricsPreview(
                 ).size.height
                 val upcomingHeightsPx = sourceContent.upcoming.map { lyric ->
                     textMeasurer.measure(
-                        text = androidx.compose.ui.text.AnnotatedString(lyric.text),
+                        text = upcomingLyricText(sortedLyrics, lyric.lyricIndex, lyric.text, furigana, furiganaRubyFontSize(upcomingStyle)),
                         style = upcomingStyle,
                         overflow = TextOverflow.Ellipsis,
                         softWrap = true,
@@ -865,7 +928,7 @@ internal fun NowPlayingLyricsPreview(
 
         fun measureTrackGeometry(trackContent: NowPlayingLyricsPreviewContent): NowPlayingLyricTrackGeometry {
             val currentHeightPx = textMeasurer.measure(
-                text = androidx.compose.ui.text.AnnotatedString(trackContent.current),
+                text = upcomingLyricText(sortedLyrics, trackContent.activeIndex, trackContent.current, furigana, furiganaRubyFontSize(currentStyle)),
                 style = currentStyle,
                 overflow = TextOverflow.Ellipsis,
                 softWrap = true,
@@ -879,7 +942,7 @@ internal fun NowPlayingLyricsPreview(
             trackContent.upcoming.forEachIndexed { slot, lyric ->
                 lineTopByIndex[lyric.lyricIndex] = cursorPx
                 val lineHeightPx = textMeasurer.measure(
-                    text = androidx.compose.ui.text.AnnotatedString(lyric.text),
+                    text = upcomingLyricText(sortedLyrics, lyric.lyricIndex, lyric.text, furigana, furiganaRubyFontSize(upcomingStyle)),
                     style = upcomingStyle,
                     overflow = TextOverflow.Ellipsis,
                     softWrap = true,
@@ -908,7 +971,8 @@ internal fun NowPlayingLyricsPreview(
             upcomingMaxLines,
             textConstraints,
             verticalSpacingPx,
-            dividerHeightPx
+            dividerHeightPx,
+            furigana
         ) {
             measureTrackGeometry(fromContent)
         }
@@ -920,7 +984,8 @@ internal fun NowPlayingLyricsPreview(
             upcomingMaxLines,
             textConstraints,
             verticalSpacingPx,
-            dividerHeightPx
+            dividerHeightPx,
+            furigana
         ) {
             measureTrackGeometry(toContent)
         }
@@ -1049,7 +1114,13 @@ internal fun NowPlayingLyricsPreview(
 
                     if (renderAsCurrent && marqueeCurrentLine) {
                         SlowMarqueeText(
-                            text = line.text,
+                            content = marqueeLyricText(
+                                sortedLyrics,
+                                line.lyricIndex,
+                                line.text,
+                                furigana,
+                                furiganaRubyFontSize(currentStyle)
+                            ),
                             durationMs = line.durationMs,
                             style = currentStyle,
                             colors = colors,
@@ -1058,7 +1129,13 @@ internal fun NowPlayingLyricsPreview(
                         )
                     } else {
                         Text(
-                            text = line.text,
+                            text = upcomingLyricText(
+                                sortedLyrics,
+                                line.lyricIndex,
+                                line.text,
+                                furigana,
+                                furiganaRubyFontSize(if (renderAsCurrent) currentStyle else upcomingStyle)
+                            ),
                             style = if (renderAsCurrent) currentStyle else upcomingStyle,
                             color = if (renderAsCurrent) colors.activeText else colors.inactiveText,
                             modifier = lineModifier,
@@ -1077,19 +1154,18 @@ internal fun NowPlayingLyricsPreview(
 @Composable
 @OptIn(ExperimentalFoundationApi::class)
 private fun SlowMarqueeText(
-    text: String,
+    content: AnnotatedString,
     durationMs: Long,
     style: androidx.compose.ui.text.TextStyle,
     colors: LyricReadableColors,
     fontWeight: FontWeight,
     modifier: Modifier = Modifier
 ) {
-    val singleLine = remember(text) { normalizeSingleLineText(text) }
-    val content = singleLine.ifBlank { " " }
+    val drawn = if (content.text.isBlank()) AnnotatedString(" ") else content
     val textMeasurer = androidx.compose.ui.text.rememberTextMeasurer()
-    val textLayoutResult = remember(content, style, fontWeight) {
+    val textLayoutResult = remember(drawn, style, fontWeight) {
         textMeasurer.measure(
-            text = androidx.compose.ui.text.AnnotatedString(content),
+            text = drawn,
             style = style.copy(fontWeight = fontWeight)
         )
     }
@@ -1117,7 +1193,7 @@ private fun SlowMarqueeText(
 
         key(content, availableWidth, needsMarquee, finalVelocity) {
             Text(
-                text = content,
+                text = drawn,
                 style = style.copy(fontWeight = fontWeight),
                 color = colors.activeText,
                 maxLines = 1,
@@ -1142,7 +1218,7 @@ private fun SlowMarqueeText(
     }
 }
 
-private fun normalizeSingleLineText(text: String): String {
+internal fun normalizeSingleLineText(text: String): String {
     return text
         .replace('\uFEFF', ' ')
         .replace('\r', ' ')
@@ -1152,7 +1228,7 @@ private fun normalizeSingleLineText(text: String): String {
         .trim()
 }
 
-private fun normalizeMultilineText(text: String): String {
+internal fun normalizeMultilineText(text: String): String {
     return text
         .replace('\uFEFF', ' ')
         .replace("\r\n", "\n")

@@ -285,18 +285,52 @@ class SettingsRepository private constructor(
     val customAiApiSettings: Flow<CustomAiApiSettings> =
         context.settingsDataStore.data.map { prefs -> readCustomAiApiSettings(prefs) }
 
+    val customAiSelectedPreset: Flow<String> =
+        context.settingsDataStore.data.map { prefs ->
+            prefs[SettingsKeys.CUSTOM_AI_SELECTED_PRESET] ?: customAiDefaultPresetId()
+        }
+
     suspend fun loadCustomAiApiSettings(): CustomAiApiSettings =
         withContext(Dispatchers.IO) {
             readCustomAiApiSettings(context.settingsDataStore.data.first())
         }
 
-    private fun readCustomAiApiSettings(prefs: Preferences): CustomAiApiSettings =
-        CustomAiApiSettings(
+    suspend fun loadSelectedCustomAiPresetId(): String =
+        withContext(Dispatchers.IO) {
+            context.settingsDataStore.data.first()[SettingsKeys.CUSTOM_AI_SELECTED_PRESET]
+                ?: customAiDefaultPresetId()
+        }
+
+    /** 读取某个预设独立保存的配置；默认预设首次为空时回退到旧版共用字段，兼容已有数据。 */
+    private fun readPresetProfile(prefs: Preferences, presetId: String): CustomAiApiSettings {
+        val isDefault = presetId == customAiDefaultPresetId()
+        val fallbackUrl = prefs[SettingsKeys.CUSTOM_AI_API_URL] ?: ""
+        val fallbackModel = prefs[SettingsKeys.CUSTOM_AI_API_MODEL] ?: ""
+        val fallbackParams = prefs[SettingsKeys.CUSTOM_AI_SEND_DEEPSEEK_PARAMS] ?: false
+        val apiUrl = prefs[SettingsKeys.customAiPresetUrlKey(presetId)]
+            .takeIf { !it.isNullOrBlank() } ?: if (isDefault) fallbackUrl else ""
+        val model = prefs[SettingsKeys.customAiPresetModelKey(presetId)]
+            .takeIf { !it.isNullOrBlank() } ?: if (isDefault) fallbackModel else ""
+        val sendDeepSeekParams = prefs[SettingsKeys.customAiPresetDeepSeekParamsKey(presetId)]
+            ?: if (isDefault) fallbackParams else false
+        return CustomAiApiSettings(
             enabled = prefs[SettingsKeys.CUSTOM_AI_API_ENABLED] ?: false,
-            apiUrl = prefs[SettingsKeys.CUSTOM_AI_API_URL] ?: "",
-            model = prefs[SettingsKeys.CUSTOM_AI_API_MODEL] ?: "",
-            sendDeepSeekParams = prefs[SettingsKeys.CUSTOM_AI_SEND_DEEPSEEK_PARAMS] ?: false
+            apiUrl = apiUrl,
+            model = model,
+            sendDeepSeekParams = sendDeepSeekParams
         )
+    }
+
+    private fun readCustomAiApiSettings(prefs: Preferences): CustomAiApiSettings {
+        val selected = prefs[SettingsKeys.CUSTOM_AI_SELECTED_PRESET] ?: customAiDefaultPresetId()
+        return readPresetProfile(prefs, selected)
+    }
+
+    suspend fun selectCustomAiPreset(presetId: String) {
+        withContext(Dispatchers.IO) {
+            context.settingsDataStore.edit { it[SettingsKeys.CUSTOM_AI_SELECTED_PRESET] = presetId }
+        }
+    }
 
     suspend fun setCustomAiApiEnabled(enabled: Boolean) {
         withContext(Dispatchers.IO) {
@@ -306,19 +340,22 @@ class SettingsRepository private constructor(
 
     suspend fun setCustomAiApiUrl(url: String) {
         withContext(Dispatchers.IO) {
-            context.settingsDataStore.edit { it[SettingsKeys.CUSTOM_AI_API_URL] = url.trim() }
+            val presetId = loadSelectedCustomAiPresetId()
+            context.settingsDataStore.edit { it[SettingsKeys.customAiPresetUrlKey(presetId)] = url.trim() }
         }
     }
 
     suspend fun setCustomAiApiModel(model: String) {
         withContext(Dispatchers.IO) {
-            context.settingsDataStore.edit { it[SettingsKeys.CUSTOM_AI_API_MODEL] = model.trim() }
+            val presetId = loadSelectedCustomAiPresetId()
+            context.settingsDataStore.edit { it[SettingsKeys.customAiPresetModelKey(presetId)] = model.trim() }
         }
     }
 
     suspend fun setCustomAiSendDeepSeekParams(enabled: Boolean) {
         withContext(Dispatchers.IO) {
-            context.settingsDataStore.edit { it[SettingsKeys.CUSTOM_AI_SEND_DEEPSEEK_PARAMS] = enabled }
+            val presetId = loadSelectedCustomAiPresetId()
+            context.settingsDataStore.edit { it[SettingsKeys.customAiPresetDeepSeekParamsKey(presetId)] = enabled }
         }
     }
 

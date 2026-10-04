@@ -44,6 +44,7 @@ import com.asmr.player.data.remote.auth.DlsiteAuthStore
 import com.asmr.player.data.remote.auth.buildDlsiteCookieHeader
 import com.asmr.player.data.remote.crawler.AsmrOneCrawler
 import com.asmr.player.data.remote.otomekoe.OtomeKoeClient
+import com.asmr.player.util.OtomeKoeMedia
 import com.asmr.player.data.remote.crawler.AsmrOneSearchResult
 import com.asmr.player.data.remote.crawler.AsmrOneTracksResult
 import com.asmr.player.data.remote.crawler.selectAsmrOneWorkForRj
@@ -1600,11 +1601,32 @@ class AlbumDetailViewModel @Inject constructor(
             current.model.hasResolvedOtomeKoe ||
             current.model.isLoadingOtomeKoe
         ) return
+        // 已带有来源流地址（如来自 OtomeKoe 搜索）时直接采用，避免探测被 Cloudflare 拦截
+        // 返回 null 后把来源标记覆盖掉，导致详情页不显示 OtomeKoe 音频区。
+        val existingStreamUrl = current.model.otomeKoeStreamUrl?.takeIf { it.isNotBlank() }
+        if (existingStreamUrl != null) {
+            _uiState.value = AlbumDetailUiState.Success(
+                model = current.model.copy(
+                    otomeKoeStreamUrl = existingStreamUrl,
+                    isLoadingOtomeKoe = false,
+                    hasResolvedOtomeKoe = true
+                )
+            )
+            return
+        }
         _uiState.value = AlbumDetailUiState.Success(
             model = current.model.copy(isLoadingOtomeKoe = true)
         )
         viewModelScope.launch {
-            val streamUrl = runCatching { otomeKoeClient.probeStreamUrl(keyRj) }.getOrNull()
+            // 先探测固定流地址；若被 Cloudflare 拦截返回 null，则回退到「按 RJ 站内搜索」
+            // 确认作品是否存在（搜索走 WordPress REST API，未被拦截），存在则用固定规则推导流地址。
+            val probe = runCatching { otomeKoeClient.probeStreamUrl(keyRj) }.getOrNull()
+            val streamUrl = probe ?: runCatching {
+                otomeKoeClient.search(keyRj, 1)
+                    .items
+                    .firstOrNull { it.rjCode.equals(keyRj, ignoreCase = true) }
+                    ?.let { OtomeKoeMedia.streamUrlFor(keyRj) }
+            }.getOrNull()
             val latest = _uiState.value as? AlbumDetailUiState.Success ?: return@launch
             val latestRj = latest.model.rjCode.trim().uppercase()
             if (!latestRj.equals(keyRj, ignoreCase = true)) return@launch
@@ -2328,11 +2350,15 @@ class AlbumDetailViewModel @Inject constructor(
             return
         }
         val album = model.displayAlbum
+        val coverUrl = album.coverUrl.trim().ifBlank {
+            // OtomeKoe 单曲常无封面链接，但封面地址可由 RJ 码直接推导。
+            OtomeKoeMedia.coverUrlFor(album.rjCode)
+        }
         viewModelScope.launch(Dispatchers.IO) {
             val result = downloadManager.enqueueOtomeKoeAudio(
                 streamUrl = streamUrl,
                 title = album.title,
-                coverUrl = album.coverUrl,
+                coverUrl = coverUrl,
                 rjCode = album.rjCode,
                 workId = album.workId,
                 circle = album.circle,
@@ -2349,7 +2375,8 @@ class AlbumDetailViewModel @Inject constructor(
             model = current.model,
             tree = current.model.asmrOneTree,
             selectedLeafPaths = selectedLeafPaths,
-            relativeBaseDir = ""
+            relativeBaseDir = "",
+            galleryUrls = current.model.dlsiteGalleryUrls
         )
     }
 
@@ -2359,7 +2386,8 @@ class AlbumDetailViewModel @Inject constructor(
             model = current.model,
             tree = current.model.dlsitePlayTree,
             selectedLeafPaths = selectedLeafPaths,
-            relativeBaseDir = ""
+            relativeBaseDir = "",
+            galleryUrls = current.model.dlsiteGalleryUrls
         )
     }
 
@@ -3056,7 +3084,8 @@ class AlbumDetailViewModel @Inject constructor(
         model: AlbumDetailModel,
         tree: List<AsmrOneTrackNodeResponse>,
         selectedLeafPaths: Set<String>,
-        relativeBaseDir: String
+        relativeBaseDir: String,
+        galleryUrls: List<String> = emptyList()
     ) {
         val album = resolvedOnlineActionAlbum(model)
         val localAlbum = model.localAlbum
@@ -3065,7 +3094,7 @@ class AlbumDetailViewModel @Inject constructor(
             album.rjCode.isNotBlank() &&
             (localAlbum?.rjCode.isNullOrBlank() || localAlbum?.workId.isNullOrBlank())
         if (!shouldBindLocalIdentity) {
-            enqueueRemoteTreeSelectionDownload(album, tree, selectedLeafPaths, relativeBaseDir)
+            enqueueRemoteTreeSelectionDownload(album, tree, selectedLeafPaths, relativeBaseDir, galleryUrls)
             return
         }
 
@@ -3084,7 +3113,7 @@ class AlbumDetailViewModel @Inject constructor(
             } catch (_: Exception) {
                 // 下载任务仍可通过自身的作品元信息在完成后合并进本地库。
             }
-            enqueueRemoteTreeSelectionDownload(album, tree, selectedLeafPaths, relativeBaseDir)
+            enqueueRemoteTreeSelectionDownload(album, tree, selectedLeafPaths, relativeBaseDir, galleryUrls)
         }
     }
 
@@ -3092,7 +3121,8 @@ class AlbumDetailViewModel @Inject constructor(
         album: Album,
         tree: List<AsmrOneTrackNodeResponse>,
         selectedLeafPaths: Set<String>,
-        relativeBaseDir: String
+        relativeBaseDir: String,
+        galleryUrls: List<String> = emptyList()
     ) {
         if (tree.isEmpty()) return
 
@@ -3135,7 +3165,8 @@ class AlbumDetailViewModel @Inject constructor(
             album = album,
             selected = selected,
             relativeBaseDir = relativeBaseDir,
-            includeCover = true
+            includeCover = true,
+            galleryUrls = galleryUrls
         )
     }
 
@@ -3143,9 +3174,10 @@ class AlbumDetailViewModel @Inject constructor(
         album: Album,
         selected: Collection<AsmrOneLeafDownload>,
         relativeBaseDir: String,
-        includeCover: Boolean
+        includeCover: Boolean,
+        galleryUrls: List<String> = emptyList()
     ) {
-        if (selected.isEmpty()) return
+        if (selected.isEmpty() && galleryUrls.isEmpty()) return
 
         val rjOrWorkId = album.rjCode.ifBlank { album.workId }
         val folderName = safeFolderName(rjOrWorkId.ifBlank { album.title })
@@ -3153,6 +3185,20 @@ class AlbumDetailViewModel @Inject constructor(
         val taskKey = buildRemoteDownloadTaskKey(folderName, normalizedBaseDir)
         val taskSubtitle = album.title
         val batchItems = mutableListOf<RelativeDownloadItem>()
+        // 样图（gallery）随专辑一起下载到 gallery/ 子目录，方便在本地文件夹查看。
+        galleryUrls.forEachIndexed { index, rawGalleryUrl ->
+            val galleryUrl = rawGalleryUrl.trim()
+            if (!galleryUrl.startsWith("http", ignoreCase = true)) return@forEachIndexed
+            val seg = galleryUrl.substringBefore('?').substringAfterLast('/')
+            val nameHint = seg.substringBeforeLast('.').ifBlank { "image" }
+            val ext = galleryUrl.substringBefore('?').substringAfterLast('.', "")
+                .takeIf { it.length in 2..5 } ?: "jpg"
+            val fileName = "gallery/${(index + 1).toString().padStart(2, '0')}_${safeFileName(nameHint)}.$ext"
+            val relativeGallery = listOf(normalizedBaseDir, fileName)
+                .filter { it.isNotBlank() }
+                .joinToString("/")
+            batchItems += RelativeDownloadItem(url = galleryUrl, relativePath = relativeGallery)
+        }
         if (includeCover) {
             val coverUrl = album.coverUrl.trim()
             if (coverUrl.startsWith("http", ignoreCase = true)) {

@@ -61,7 +61,7 @@ private data class DeepSeekChatRequest(
     val responseFormat: DeepSeekResponseFormat? = DeepSeekResponseFormat(),
     val tools: List<DeepSeekToolDefinition>? = null,
     @SerializedName("max_tokens")
-    val maxTokens: Int = 32_768,
+    val maxTokens: Int = 16_384,
     val stream: Boolean = false
 )
 
@@ -159,7 +159,7 @@ internal class SubtitleTranslationClient(
         }
         var confirmedSourceCount = confirmed.sumOf { it.sourceIndices.size }
         if (confirmedSourceCount >= sources.size) return confirmed
-        val messages = buildSubtitleAgentInitialMessages(
+        var messages = buildSubtitleAgentInitialMessages(
             gson = gson,
             sources = sources,
             allowMerging = allowMerging,
@@ -169,6 +169,7 @@ internal class SubtitleTranslationClient(
         ).toMutableList()
         var stalledTurnCount = 0
         while (confirmedSourceCount < sources.size) {
+            messages = trimAgentHistory(messages).toMutableList()
             val response = requestSubtitleAgentResponse(
                 messages = messages,
                 targetIndices = sources.drop(confirmedSourceCount).map(GeneratedSubtitleSource::index),
@@ -201,11 +202,14 @@ internal class SubtitleTranslationClient(
                         )
 
                         SUBTITLE_WRITE_TOOL_NAME -> {
+                            // 窗口化写入：只允许写出当前读窗口内的字幕，杜绝模型一次写出整条音轨撑爆请求体（Groq 413）。
+                            // read 已窗口化，但 write 接受「整段剩余」时模型仍可能把已读到的全部字幕回显进参数，单条请求即超限。
                             val remainingSources = sources.drop(confirmedSourceCount)
+                            val writeWindowSources = remainingSources.take(SUBTITLE_READ_WINDOW_SIZE)
                             val parsed = runCatching {
                                 parseSubtitleWriteToolArguments(
                                     arguments = toolCall.function.arguments.orEmpty(),
-                                    expectedRemainingSources = remainingSources,
+                                    expectedRemainingSources = writeWindowSources,
                                     allowMerging = allowMerging
                                 )
                             }
@@ -351,7 +355,7 @@ internal class SubtitleTranslationClient(
         require(allCaptions.map(PolishCaptionInput::captionId).distinct().size == allCaptions.size) {
             "润色字幕主键不能重复"
         }
-        val messages = buildPolishAgentInitialMessages(
+        var messages = buildPolishAgentInitialMessages(
             gson = gson,
             tracks = tracks,
             workContext = workContext
@@ -362,6 +366,7 @@ internal class SubtitleTranslationClient(
         var readCompleted = false
         var stalledTurnCount = 0
         while (!readCompleted) {
+            messages = trimAgentHistory(messages).toMutableList()
             val response = requestSubtitleAgentResponse(
                 messages = messages,
                 targetIndices = emptyList(),
@@ -678,6 +683,12 @@ internal const val SCRIPT_READ_TOOL_NAME = "read_work_script_file"
 internal const val DEEPSEEK_CHAT_COMPLETIONS_URL = "https://api.deepseek.com/chat/completions"
 private const val MAX_SUBTITLE_AGENT_STALLED_TURNS = 4
 private const val MAX_POLISH_AGENT_STALLED_TURNS = 4
+// 每轮 read 工具只回传从已确认位置开始的下一窗字幕，避免请求体随进度无限膨胀
+// （Groq 等服务对单次请求体积有上限，整份重发会触发 HTTP 413）。
+private const val SUBTITLE_READ_WINDOW_SIZE = 64
+// agent 对话历史最多保留的「assistant↔tool」轮次块数；超出的旧轮次在每轮请求前被裁剪，
+// 把请求体积钉死，避免长音轨多轮后历史累积触发 HTTP 413。
+private const val AGENT_HISTORY_KEEP_BLOCKS = 4
 private const val POLISH_READ_PAGE_SIZE = 40
 private const val SCRIPT_READ_DEFAULT_LIMIT = 4_000
 private const val SCRIPT_READ_MAX_LIMIT = 8_000
@@ -1088,24 +1099,34 @@ internal fun buildSubtitleReadToolResultMessage(
     val confirmedSourceCount = confirmedCaptions.sumOf { it.sourceIndices.size }
     require(confirmedSourceCount in 0..sources.size)
     val nextSource = sources.getOrNull(confirmedSourceCount)
+    // 窗口化：只回传从已确认位置起的下一窗日文字幕，已完成字幕也只回传最近一窗，
+    // 把单轮请求体积钉死，避免循环累积导致 Groq 等服务返回 HTTP 413。
+    val windowStart = confirmedSourceCount
+    val windowEnd = (confirmedSourceCount + SUBTITLE_READ_WINDOW_SIZE).coerceAtMost(sources.size)
     val result = buildMap<String, Any> {
-        put("japanese_subtitles", sources.map { source ->
-            mapOf(
-                "index" to source.index,
-                "start_ms" to source.startMs,
-                "end_ms" to source.endMs,
-                "japanese" to source.text
-            )
-        })
-        put("completed_chinese_subtitles", confirmedCaptions.map { caption ->
-            mapOf(
-                "source_indices" to caption.sourceIndices,
-                "start_ms" to caption.startMs,
-                "end_ms" to caption.endMs,
-                "japanese" to caption.correctedJapanese,
-                "chinese" to caption.chineseText
-            )
-        })
+        put(
+            "japanese_subtitles",
+            sources.subList(windowStart, windowEnd).map { source ->
+                mapOf(
+                    "index" to source.index,
+                    "start_ms" to source.startMs,
+                    "end_ms" to source.endMs,
+                    "japanese" to source.text
+                )
+            }
+        )
+        put(
+            "completed_chinese_subtitles",
+            confirmedCaptions.takeLast(SUBTITLE_READ_WINDOW_SIZE).map { caption ->
+                mapOf(
+                    "source_indices" to caption.sourceIndices,
+                    "start_ms" to caption.startMs,
+                    "end_ms" to caption.endMs,
+                    "japanese" to caption.correctedJapanese,
+                    "chinese" to caption.chineseText
+                )
+            }
+        )
         put("completed_source_count", confirmedSourceCount)
         put("remaining_source_count", sources.size - confirmedSourceCount)
         put("completed", nextSource == null)
@@ -1119,6 +1140,33 @@ internal fun buildSubtitleReadToolResultMessage(
         content = gson.toJson(result),
         toolCallId = toolCallId
     )
+}
+
+/**
+ * 裁剪 agent 对话历史，避免长音轨多轮翻译后请求体无限膨胀触发 Groq 等服务的 HTTP 413。
+ * 始终保留 system + 初始 user，仅保留末尾 [keepBlocks] 个「assistant↔tool」轮次块，其余旧消息丢弃。
+ * 每个块从一条 assistant 消息起、到其后续 tool/user 消息止，保证 tool_call 与 tool_result 始终成对，
+ * 不破坏 OpenAI 消息格式；read 工具仍按已确认位置回传当前窗口，故裁剪不影响进度推进。
+ */
+private fun trimAgentHistory(
+    messages: List<DeepSeekChatMessage>,
+    keepBlocks: Int = AGENT_HISTORY_KEEP_BLOCKS
+): List<DeepSeekChatMessage> {
+    if (messages.size <= 2) return messages
+    val head = messages.take(2) // system + 初始 user
+    val tail = messages.drop(2)
+    val blocks = mutableListOf<MutableList<DeepSeekChatMessage>>()
+    var cur = mutableListOf<DeepSeekChatMessage>()
+    for (m in tail) {
+        if (m.role == "assistant" && cur.isNotEmpty()) {
+            blocks += cur
+            cur = mutableListOf()
+        }
+        cur += m
+    }
+    if (cur.isNotEmpty()) blocks += cur
+    if (blocks.size <= keepBlocks) return messages
+    return head + blocks.takeLast(keepBlocks).flatten()
 }
 
 internal fun buildSubtitleWriteToolResultMessage(

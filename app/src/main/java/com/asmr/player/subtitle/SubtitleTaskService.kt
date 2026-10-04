@@ -477,6 +477,10 @@ internal class SubtitleTaskService : Service() {
     }
 
     private suspend fun prepareGeneratedTranslation(itemId: String) {
+        if (database.subtitleTaskDao().getItem(itemId)?.mode == SubtitleTaskMode.TRANSCRIPTION_ONLY) {
+            finishTranscriptionOnly(itemId)
+            return
+        }
         val dao = database.subtitleTaskDao()
         val chunks = dao.getChunks(itemId)
         val generated = chunks.flatMap { chunk -> gson.generatedSubtitles(chunk.segmentsJson) }
@@ -528,6 +532,56 @@ internal class SubtitleTaskService : Service() {
                 )
             )
         }
+        repository.refreshTaskState(item.taskId)
+    }
+
+    /**
+     * 只转录模式：本地模型把音频转写为日文字幕后直接落库，不再走翻译流程。
+     * 复用与生成流程相同的分段/规整逻辑，但只写入日文原文（japaneseText == text）。
+     */
+    private suspend fun finishTranscriptionOnly(itemId: String) {
+        val dao = database.subtitleTaskDao()
+        val chunks = dao.getChunks(itemId)
+        val generated = chunks.flatMap { chunk -> gson.generatedSubtitles(chunk.segmentsJson) }
+        val item = dao.getItem(itemId) ?: return
+        val durationMs = maxOf(item.totalDurationMs, chunks.lastOrNull()?.endMs ?: 0L)
+        val sourceSegments = SubtitleSegmentNormalizer.normalize(generated, durationMs)
+        check(sourceSegments.isNotEmpty()) { "未识别到可生成字幕的日语语音" }
+        val fallback = SubtitleSegmentNormalizer.normalize(
+            SubtitleSemanticSegmenter.reflow(sourceSegments),
+            durationMs
+        )
+        check(fallback.isNotEmpty()) { "未识别到可生成字幕的日语语音" }
+        val playerSubtitles = fallback.map { caption ->
+            SubtitleEntity(
+                trackId = item.trackId,
+                startMs = caption.startMs,
+                endMs = caption.endMs,
+                text = caption.text,
+                japaneseText = caption.text
+            )
+        }
+        database.withTransaction {
+            val current = dao.getItem(itemId) ?: return@withTransaction
+            check(current.state == SubtitleItemState.TRANSCRIBING) { "字幕转录已暂停或取消" }
+            val playerCurrent = database.trackDao().getSubtitlesForTrack(current.trackId).sortedWith(SUBTITLE_ORDER)
+            check(subtitleHash(playerCurrent) == current.lastPublishedHash) { "字幕在转录期间已被修改，未覆盖用户版本" }
+            database.trackDao().deleteSubtitlesForTrack(current.trackId)
+            database.trackDao().insertSubtitles(playerSubtitles)
+            val publishedHash = subtitleHash(playerSubtitles)
+            dao.updateItem(
+                current.copy(
+                    state = SubtitleItemState.SUCCEEDED,
+                    transcriptionProgress = 100,
+                    transcribedMs = durationMs,
+                    totalDurationMs = durationMs,
+                    errorMessage = "",
+                    lastPublishedHash = publishedHash,
+                    updatedAt = System.currentTimeMillis()
+                )
+            )
+        }
+        repository.finishSucceeded(itemId)
         repository.refreshTaskState(item.taskId)
     }
 
@@ -1246,7 +1300,8 @@ internal class SubtitleTaskService : Service() {
     private suspend fun requireTranslationClient(): SubtitleTranslationClient {
         val customSettings = settingsRepository.loadCustomAiApiSettings()
         if (customSettings.enabled) {
-            val apiKey = CustomAiApiKeyStore.get(applicationContext).read()
+            val presetId = settingsRepository.loadSelectedCustomAiPresetId()
+            val apiKey = CustomAiApiKeyStore.get(applicationContext).read(presetId)
             check(apiKey.isNotBlank()) { "请先在设置中配置自定义 AI API Key" }
             val apiUrl = normalizeCustomAiApiUrl(customSettings.apiUrl)
             val model = customSettings.model.trim()

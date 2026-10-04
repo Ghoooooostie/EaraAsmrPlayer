@@ -11,6 +11,7 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.repeatOnLifecycle
 import com.asmr.player.ui.player.NowPlayingLyricsPreview
+import com.asmr.player.util.FuriganaSpec
 import com.asmr.player.ui.player.rememberLyricReadableColors
 import com.asmr.player.ui.theme.AsmrTheme
 import com.asmr.player.data.settings.FloatingLyricsSettings
@@ -71,6 +72,7 @@ internal fun MultilineLyricsBenchmarkScreen(floating: Boolean = false) {
                     lyrics = lyrics,
                     currentPosition = lyrics[cue].startMs,
                     onOpenLyrics = {},
+                    furigana = FuriganaSpec.NONE,
                     colors = rememberLyricReadableColors(theme.primaryStrong),
                     multilineEnabled = true,
                     highlightFontSizeSp = if (compact) 36f else 24f,

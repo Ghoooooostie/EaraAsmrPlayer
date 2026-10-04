@@ -1375,7 +1375,8 @@ private fun translationTaskProgressText(task: TranslationTaskUi): String {
 }
 
 internal fun SubtitleTaskItemUi.toTranslationTaskUi(task: SubtitleTaskUi): TranslationTaskUi {
-    val usesTranscriptionProgress = translationTotal <= 0 && mode == SubtitleTaskMode.GENERATED
+    val usesTranscriptionProgress = translationTotal <= 0 &&
+        (mode == SubtitleTaskMode.GENERATED || mode == SubtitleTaskMode.TRANSCRIPTION_ONLY)
     val fraction = when {
         translationTotal > 0 -> translationCursor.toFloat() / translationTotal.toFloat()
         usesTranscriptionProgress -> transcriptionProgress / 100f

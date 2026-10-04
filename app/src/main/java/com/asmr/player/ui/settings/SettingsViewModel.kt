@@ -19,6 +19,7 @@ import com.asmr.player.data.remote.update.UpdateRelease
 import com.asmr.player.data.settings.AppContentMode
 import com.asmr.player.data.settings.CoverPreviewMode
 import com.asmr.player.data.settings.CustomAiApiSettings
+import com.asmr.player.data.settings.customAiDefaultPresetId
 import com.asmr.player.data.settings.DeepSeekReasoningEffort
 import com.asmr.player.data.settings.DeepSeekTranslationSettings
 import com.asmr.player.data.settings.AppProxyMode
@@ -170,6 +171,8 @@ class SettingsViewModel @Inject constructor(
 
     val subtitleDisplayMode: StateFlow<SubtitleDisplayMode> = settingsDataStore.subtitleDisplayMode
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), SubtitleDisplayMode.CHINESE)
+    val japaneseFuriganaEnabled: StateFlow<Boolean> = settingsDataStore.japaneseFuriganaEnabled
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), false)
 
     val subtitleBilingualOrder: StateFlow<SubtitleBilingualOrder> = settingsDataStore.subtitleBilingualOrder
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), SubtitleBilingualOrder.JAPANESE_FIRST)
@@ -272,6 +275,13 @@ class SettingsViewModel @Inject constructor(
     private val _customAiApiModelsState = MutableStateFlow(CustomAiApiModelsUiState())
     internal val customAiApiModelsState = _customAiApiModelsState.asStateFlow()
 
+    internal val customAiSelectedPreset: StateFlow<String> =
+        settingsRepository.customAiSelectedPreset.stateIn(
+            viewModelScope,
+            SharingStarted.WhileSubscribed(5_000),
+            customAiDefaultPresetId()
+        )
+
     internal data class TranslationApiTestUiState(
         val running: Boolean = false,
         val success: Boolean = false,
@@ -299,7 +309,8 @@ class SettingsViewModel @Inject constructor(
                 deepSeekAccountRepository.bindApiKey(apiKey)
                 deepSeekAccountRepository.refreshBalance(apiKey)
             }
-            val customAiConfigured = customAiApiKeyStore.read().isNotBlank()
+            val selectedPreset = settingsRepository.loadSelectedCustomAiPresetId()
+            val customAiConfigured = customAiApiKeyStore.read(selectedPreset).isNotBlank()
             _customAiApiKeyState.value = _customAiApiKeyState.value.copy(configured = customAiConfigured)
         }
     }
@@ -318,6 +329,10 @@ class SettingsViewModel @Inject constructor(
 
     fun setSubtitleBilingualOrder(order: SubtitleBilingualOrder) {
         viewModelScope.launch { settingsDataStore.setSubtitleBilingualOrder(order) }
+    }
+
+    fun setJapaneseFuriganaEnabled(enabled: Boolean) {
+        viewModelScope.launch { settingsDataStore.setJapaneseFuriganaEnabled(enabled) }
     }
 
     fun updateLyricsPageSettings(settings: LyricsPageSettings) {
@@ -520,6 +535,17 @@ class SettingsViewModel @Inject constructor(
         viewModelScope.launch { settingsRepository.setCustomAiSendDeepSeekParams(enabled) }
     }
 
+    /** 切换激活的端点预设：写入选中项，返回该预设自己的配置，并刷新输入框下方的配置状态。 */
+    internal suspend fun selectAndLoadCustomAiPreset(presetId: String): CustomAiApiSettings {
+        settingsRepository.selectCustomAiPreset(presetId)
+        val profile = settingsRepository.loadCustomAiApiSettings()
+        val keyConfigured = customAiApiKeyStore.read(presetId).isNotBlank()
+        val endpointConfigured = profile.apiUrl.isNotBlank() && profile.model.isNotBlank()
+        _customAiApiKeyState.value = _customAiApiKeyState.value.copy(configured = keyConfigured)
+        _customAiApiEndpointState.value = _customAiApiEndpointState.value.copy(configured = endpointConfigured)
+        return profile
+    }
+
     internal fun saveCustomAiApiEndpoint(urlInput: String, modelInput: String) {
         val normalizedUrl = normalizeCustomAiApiUrl(urlInput)
         if (normalizedUrl == null) {
@@ -569,7 +595,7 @@ class SettingsViewModel @Inject constructor(
                 saving = true,
                 errorMessage = null
             )
-            val saved = runCatching { customAiApiKeyStore.save(normalized) }.isSuccess
+            val saved = runCatching { customAiApiKeyStore.save(apiKey = normalized) }.isSuccess
             if (saved) {
                 val current = _customAiApiKeyState.value
                 _customAiApiKeyState.value = current.copy(
@@ -592,8 +618,9 @@ class SettingsViewModel @Inject constructor(
             if (_customAiApiModelsState.value.loading) return@launch
             _customAiApiModelsState.value = CustomAiApiModelsUiState(loading = true)
             val saved = settingsRepository.loadCustomAiApiSettings()
+            val selectedPreset = settingsRepository.loadSelectedCustomAiPresetId()
             val apiUrl = urlInput.ifBlank { saved.apiUrl }
-            val apiKey = keyInput.ifBlank { customAiApiKeyStore.read() }.trim()
+            val apiKey = keyInput.ifBlank { customAiApiKeyStore.read(selectedPreset) }.trim()
             val modelsUrl = customAiModelsUrl(apiUrl)
             when {
                 modelsUrl == null -> _customAiApiModelsState.value = CustomAiApiModelsUiState(
@@ -621,12 +648,13 @@ class SettingsViewModel @Inject constructor(
             if (_translationApiTestState.value.running) return@launch
             _translationApiTestState.value = TranslationApiTestUiState(running = true)
             val saved = settingsRepository.loadCustomAiApiSettings()
+            val selectedPreset = settingsRepository.loadSelectedCustomAiPresetId()
             // 输入框有内容优先使用未保存的草稿，避免改了模型却仍用旧值测试
             val effectiveCustom = saved.copy(
                 apiUrl = customUrlInput.ifBlank { saved.apiUrl },
                 model = customModelInput.ifBlank { saved.model }
             )
-            val effectiveCustomKey = customKeyInput.ifBlank { customAiApiKeyStore.read() }
+            val effectiveCustomKey = customKeyInput.ifBlank { customAiApiKeyStore.read(selectedPreset) }
             val config = resolveTranslationApiTestConfig(
                 customSettings = effectiveCustom,
                 customApiKey = effectiveCustomKey,

@@ -66,7 +66,7 @@ class FuriganaTextTest {
 
         assertEquals("猫\n日本にほん", built.text)
         val span = built.spanStyles.single()
-        assertEquals(ruby, span.style.fontSize)
+        assertEquals(ruby, span.item.fontSize)
         assertEquals(built.text.indexOf("にほん"), span.start)
         assertEquals(built.text.length, span.end)
     }
@@ -156,7 +156,7 @@ class FuriganaTextTest {
         assertEquals("日本にほん", built.toString())
         val spans = built.getSpans(0, built.length, RelativeSizeSpan::class.java)
         assertEquals(1, spans.size)
-        assertEquals(FURIGANA_READING_SCALE, spans.single().size)
+        assertEquals(FURIGANA_READING_SCALE, spans.single().getSizeChange())
         assertEquals(built.toString().indexOf("にほん"), built.getSpanStart(spans.single()))
         assertEquals(built.length, built.getSpanEnd(spans.single()))
     }

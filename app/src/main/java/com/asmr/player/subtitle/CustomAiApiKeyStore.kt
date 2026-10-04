@@ -4,12 +4,17 @@ import android.content.Context
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import android.util.Base64
+import com.asmr.player.data.settings.customAiDefaultPresetId
 import java.security.KeyStore
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
 
+/**
+ * 自定义 AI API Key 存储。按预设分桶独立保存：每个端点预设各自持有一份密钥，
+ * 切换预设互不影响。默认预设首次读取时回退到旧版共用密钥，兼容已有数据。
+ */
 internal class CustomAiApiKeyStore private constructor(context: Context) {
     private val preferences = context.applicationContext.getSharedPreferences(
         PREFERENCES_NAME,
@@ -17,39 +22,52 @@ internal class CustomAiApiKeyStore private constructor(context: Context) {
     )
     private val lock = Any()
 
-    fun read(): String = synchronized(lock) {
-        val encrypted = preferences.getString(KEY_ENCRYPTED_VALUE, null) ?: return@synchronized ""
-        val iv = preferences.getString(KEY_INITIALIZATION_VECTOR, null) ?: return@synchronized ""
-        runCatching {
-            val cipher = Cipher.getInstance(TRANSFORMATION)
-            cipher.init(
-                Cipher.DECRYPT_MODE,
-                getOrCreateSecretKey(),
-                GCMParameterSpec(GCM_TAG_LENGTH_BITS, Base64.decode(iv, Base64.NO_WRAP))
-            )
-            cipher.doFinal(Base64.decode(encrypted, Base64.NO_WRAP)).toString(Charsets.UTF_8)
-        }.getOrElse {
-            clearStoredValue()
-            ""
+    fun read(presetId: String = customAiDefaultPresetId()): String = synchronized(lock) {
+        val encrypted = preferences.getString(encryptedValueKey(presetId), null)
+        if (encrypted != null) {
+            val iv = preferences.getString(ivKey(presetId), null) ?: return@synchronized ""
+            return@synchronized decrypt(encrypted, iv) ?: ""
         }
+        // 兼容旧版：默认预设首次读取回退到旧的共用密钥。
+        if (presetId == customAiDefaultPresetId()) {
+            val legacy = preferences.getString(KEY_ENCRYPTED_VALUE, null)
+            val legacyIv = preferences.getString(KEY_INITIALIZATION_VECTOR, null)
+            if (legacy != null && legacyIv != null) {
+                return@synchronized decrypt(legacy, legacyIv) ?: ""
+            }
+        }
+        ""
     }
 
-    fun save(apiKey: String) = synchronized(lock) {
+    fun save(presetId: String = customAiDefaultPresetId(), apiKey: String) = synchronized(lock) {
         val normalized = apiKey.trim()
         if (normalized.isEmpty()) {
-            clearStoredValue()
+            clearStoredValue(presetId)
             return@synchronized
         }
         val cipher = Cipher.getInstance(TRANSFORMATION)
         cipher.init(Cipher.ENCRYPT_MODE, getOrCreateSecretKey())
         val encrypted = cipher.doFinal(normalized.toByteArray(Charsets.UTF_8))
         preferences.edit()
-            .putString(KEY_ENCRYPTED_VALUE, Base64.encodeToString(encrypted, Base64.NO_WRAP))
-            .putString(KEY_INITIALIZATION_VECTOR, Base64.encodeToString(cipher.iv, Base64.NO_WRAP))
+            .putString(encryptedValueKey(presetId), Base64.encodeToString(encrypted, Base64.NO_WRAP))
+            .putString(ivKey(presetId), Base64.encodeToString(cipher.iv, Base64.NO_WRAP))
             .apply()
     }
 
-    fun isConfigured(): Boolean = read().isNotBlank()
+    fun isConfigured(presetId: String = customAiDefaultPresetId()): Boolean = read(presetId).isNotBlank()
+
+    private fun decrypt(encrypted: String, iv: String): String? = runCatching {
+        val cipher = Cipher.getInstance(TRANSFORMATION)
+        cipher.init(
+            Cipher.DECRYPT_MODE,
+            getOrCreateSecretKey(),
+            GCMParameterSpec(GCM_TAG_LENGTH_BITS, Base64.decode(iv, Base64.NO_WRAP))
+        )
+        cipher.doFinal(Base64.decode(encrypted, Base64.NO_WRAP)).toString(Charsets.UTF_8)
+    }.getOrElse {
+        clearStoredValue(customAiDefaultPresetId())
+        null
+    }
 
     private fun getOrCreateSecretKey(): SecretKey {
         val keyStore = KeyStore.getInstance(KEYSTORE_PROVIDER).apply { load(null) }
@@ -69,12 +87,15 @@ internal class CustomAiApiKeyStore private constructor(context: Context) {
         }
     }
 
-    private fun clearStoredValue() {
+    private fun clearStoredValue(presetId: String) {
         preferences.edit()
-            .remove(KEY_ENCRYPTED_VALUE)
-            .remove(KEY_INITIALIZATION_VECTOR)
+            .remove(encryptedValueKey(presetId))
+            .remove(ivKey(presetId))
             .apply()
     }
+
+    private fun encryptedValueKey(presetId: String) = "encrypted_value_$presetId"
+    private fun ivKey(presetId: String) = "initialization_vector_$presetId"
 
     companion object {
         private const val PREFERENCES_NAME = "custom_ai_api_key_preferences"
