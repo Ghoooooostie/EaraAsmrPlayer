@@ -142,9 +142,12 @@ internal class HlsMediaDownloader(private val client: OkHttpClient) {
         if (outputFile.exists() && !outputFile.delete()) {
             throw HlsDownloadException("无法写入下载文件")
         }
+        // 先把抽取出的 ADTS 写到临时文件，再统一转封装为 MP4（M4A），保证可定位 / 可显示时长。
+        val adtsFile = File(outputFile.parentFile, outputFile.name + ".adts.tmp")
+        adtsFile.delete()
         val demuxer = TsAdtsDemuxer()
         var downloaded = 0L
-        outputFile.outputStream().buffered(SEGMENT_BUFFER_SIZE).use { output ->
+        adtsFile.outputStream().buffered(SEGMENT_BUFFER_SIZE).use { output ->
             segments.forEachIndexed { index, segmentUrl ->
                 if (shouldStop()) throw HlsTransferStoppedException(downloaded)
                 val raw = fetchBytes(segmentUrl, referer)
@@ -162,6 +165,14 @@ internal class HlsMediaDownloader(private val client: OkHttpClient) {
             }
         }
         if (downloaded <= 0L) throw HlsDownloadException("在线音频下载结果为空")
+        try {
+            AdtsToMp4Muxer.convert(adtsFile, outputFile)
+        } catch (e: Exception) {
+            // 非 ADTS（极少出现）：退回直接拷贝原始字节，避免下载失败。
+            adtsFile.copyTo(outputFile, overwrite = true)
+        } finally {
+            adtsFile.delete()
+        }
         return downloaded
     }
 

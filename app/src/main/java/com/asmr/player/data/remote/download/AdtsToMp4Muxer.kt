@@ -196,6 +196,9 @@ internal object AdtsToMp4Muxer {
         )
     }
 
+    /** 盒子字段多为小整数（版本号、entry_count、sample_count），用 Int 写更顺手。 */
+    private fun u32(v: Int): ByteArray = u32(v.toLong())
+
     private fun u16(v: Int): ByteArray {
         return byteArrayOf(((v ushr 8) and 0xFF).toByte(), (v and 0xFF).toByte())
     }

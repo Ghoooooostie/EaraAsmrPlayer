@@ -82,6 +82,7 @@ internal fun downloadMimeType(fileName: String): String = when (fileName.substri
     "flac" -> "audio/flac"
     "wav" -> "audio/wav"
     "m4a" -> "audio/mp4"
+    "aac" -> "audio/aac"
     "ogg", "opus" -> "audio/ogg"
     "mp4" -> "video/mp4"
     "jpg", "jpeg" -> "image/jpeg"
@@ -255,6 +256,29 @@ class DownloadManager @Inject constructor(
     private val directoryCoordinator: DownloadDirectoryCoordinator,
     private val storage: DownloadStorageGateway,
 ) {
+    /**
+     * 把已下载目录里遗留的裸 ADTS（`.aac`）音频就地转封装为 `.m4a`。
+     * OtomeKoe 在重新点「下载」前调用：迁移后扩展名与新下载一致，
+     * 会被判定为已下载而不会重新拉一遍流，同时让老文件也能拖进度/点歌词跳转。
+     */
+    suspend fun migrateLegacyAdtsInAlbum(albumDirectoryName: String) {
+        val name = albumDirectoryName.replace('\\', '/').trim('/')
+        if (name.isBlank() || name.contains('/')) return
+        val destination = directoryCoordinator.currentDestination()
+        val albumRoot = if (destination is DownloadDestination.DocumentTree) {
+            runCatching { storage.resolveDirectory(destination.root, name) }.getOrNull() ?: return
+        } else {
+            File(destination.root, name).absolutePath
+        }
+        runCatching {
+            AdtsDownloadMigration.migrate(
+                rootDir = albumRoot,
+                storage = storage,
+                stagingDir = File(context.getExternalFilesDir(null) ?: context.filesDir, "download-staging"),
+            )
+        }
+    }
+
     suspend fun enqueueBatch(request: DownloadBatchRequest): EnqueueDownloadBatchResult {
         if (request.items.isEmpty()) return EnqueueDownloadBatchResult.Accepted(0)
         val albumDirectory = request.albumDirectoryName.replace('\\', '/').trim('/').ifBlank { "download" }
@@ -1638,6 +1662,15 @@ private suspend fun upsertDownloadedAlbumToLibrary(
     albumWorkId: String = "",
     albumRjCode: String = ""
 ) {
+    // 旧版下载的 OtomeKoe 音频是裸 ADTS（.aac），无采样表无法定位，进度条/歌词跳转不可用。
+    // 入库扫描前先就地转封装为 .m4a，随后扫描会补上新的音轨并清掉指向已删除文件的旧音轨。
+    runCatching {
+        AdtsDownloadMigration.migrate(
+            rootDir = rootDir,
+            storage = DownloadStorageGateway(appContext),
+            stagingDir = File(appContext.getExternalFilesDir(null) ?: appContext.filesDir, "download-staging"),
+        )
+    }
     if (rootDir.startsWith("content://")) {
         upsertDownloadedDocumentAlbumToLibrary(
             db = db,

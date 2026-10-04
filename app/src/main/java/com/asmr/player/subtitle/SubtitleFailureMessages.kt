@@ -12,7 +12,9 @@ import javax.net.ssl.SSLException
 
 internal data class DeepSeekHttpFailure(
     val message: String,
-    val retryable: Boolean
+    val retryable: Boolean,
+    /** 服务端以 413/431 拒绝了请求体：调用方可缩小请求重试，而不是直接失败。 */
+    val payloadTooLarge: Boolean = false
 )
 
 internal object SubtitleFailureMessages {
@@ -97,10 +99,20 @@ internal object SubtitleFailureMessages {
     fun deepSeekHttp(
         statusCode: Int,
         serviceMessage: String?,
-        providerLabel: String = "DeepSeek"
+        providerLabel: String = "DeepSeek",
+        requestBytes: Int? = null
     ): DeepSeekHttpFailure {
         val retryable = statusCode == 408 || statusCode == 425 || statusCode == 429 || statusCode >= 500
-        val message = when (statusCode) {
+        val payloadTooLarge = statusCode == 413 || statusCode == 431
+        val sizeHint = requestBytes?.takeIf { it > 0 }?.let { "（本次请求体约 ${it / 1024 + 1} KB）" }.orEmpty()
+        val message = when {
+            payloadTooLarge -> buildHttpMessage(
+                prefix = "$providerLabel 拒绝了本次请求体$sizeHint（HTTP $statusCode），端点的单次请求体上限过小",
+                serviceMessage = serviceMessage,
+                action = "请换用请求体上限更大的端点，或改用更短的音轨分批翻译。"
+            )
+
+            else -> when (statusCode) {
             400, 422 -> buildHttpMessage(
                 prefix = "$providerLabel 拒绝了翻译请求（HTTP $statusCode）",
                 serviceMessage = serviceMessage,
@@ -147,8 +159,9 @@ internal object SubtitleFailureMessages {
                 serviceMessage = serviceMessage,
                 action = "请稍后重试。"
             )
+            }
         }
-        return DeepSeekHttpFailure(message = message, retryable = retryable)
+        return DeepSeekHttpFailure(message = message, retryable = retryable, payloadTooLarge = payloadTooLarge)
     }
 
     private fun buildHttpMessage(prefix: String, serviceMessage: String?, action: String): String {

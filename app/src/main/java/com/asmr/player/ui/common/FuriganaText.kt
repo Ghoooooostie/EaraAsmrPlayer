@@ -29,6 +29,11 @@ fun buildFuriganaAnnotatedString(
     separator: String = "\n"
 ): AnnotatedString {
     val resolved = resolveSegments(segments, plainFallback)
+    android.util.Log.i(
+        "FuriganaRender",
+        "DIAG call enabled=${furigana.enabled} ready=${furigana.source?.ready} " +
+            "segs=${segments.map { it.text + ":" + it.japanese }} resolved=${resolved.map { it.text + ":" + it.japanese }}"
+    )
     if (!furigana.enabled || resolved.none { it.japanese }) {
         return AnnotatedString(resolved.joinToString(separator) { it.text })
     }
@@ -51,7 +56,9 @@ fun buildFuriganaAnnotatedString(
             )
         }
     }
-    return builder.toAnnotatedString()
+    val out = builder.toAnnotatedString()
+    android.util.Log.i("FuriganaRender", "DIAG annotate -> ${out.text}")
+    return out
 }
 
 /** TextView（悬浮歌词覆盖层）用的富文本；关闭注音时返回原始 String，不产生 Spanned。 */

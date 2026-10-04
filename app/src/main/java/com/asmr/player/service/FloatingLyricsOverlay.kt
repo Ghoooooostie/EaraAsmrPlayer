@@ -135,7 +135,7 @@ class FloatingLyricsOverlay(
         params = null
     }
 
-    fun updateLine(current: String, cue: SubtitleEntry? = null) {
-        container?.updateLine(current, cue)
+    fun updateLine(current: String, cue: SubtitleEntry? = null, annotated: CharSequence? = null) {
+        container?.updateLine(current, cue, annotated)
     }
 }

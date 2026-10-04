@@ -68,9 +68,14 @@ fun SubtitleEntry.displayText(
 }
 
 /**
- * 按显示模式与双语顺序把单条字幕拆成带语言标记的分段。
- * 与 [displayText] 必须逐字等价：分段按顺序拼接（\n 连接）就是该模式的展示文本。
+ * 文本是否含假名。中文句子几乎不含假名，日文句子基本都含：
+ * 用来在「日文原文就存在 text 字段、japaneseText 为空」时把主字段兜底识别成日文，
+ * 否则这类字幕会被误当中文而挡在词典外。纯汉字的中日文无法区分，按「不是日文」处理（偏保守）。
  */
+private fun String.looksJapanese(): Boolean =
+    any { it in '぀'..'ゟ' || it in '゠'..'ヿ' }
+
+/** 按显示模式与双语顺序把单条字幕拆成带语言标记的分段。 */
 fun SubtitleEntry.displaySegmentsFor(
     mode: SubtitleDisplayMode,
     order: SubtitleBilingualOrder
@@ -84,13 +89,13 @@ fun SubtitleEntry.displaySegmentsFor(
     return when (mode) {
         SubtitleDisplayMode.CHINESE -> emptyList()
         SubtitleDisplayMode.JAPANESE -> when {
-            japanese.isBlank() -> listOf(DisplaySegment(chinese, japanese = false))
+            japanese.isBlank() -> listOf(DisplaySegment(chinese, japanese = chinese.looksJapanese()))
             else -> listOf(DisplaySegment(japanese, japanese = true))
         }
         SubtitleDisplayMode.BILINGUAL -> when {
-            japanese.isBlank() -> listOf(DisplaySegment(chinese, japanese = false))
+            japanese.isBlank() -> listOf(DisplaySegment(chinese, japanese = chinese.looksJapanese()))
             chinese.isBlank() -> listOf(DisplaySegment(japanese, japanese = true))
-            japanese == chinese -> listOf(DisplaySegment(chinese, japanese = false))
+            japanese == chinese -> listOf(DisplaySegment(chinese, japanese = chinese.looksJapanese()))
             else -> if (order == SubtitleBilingualOrder.JAPANESE_FIRST) bilingual.reversed() else bilingual
         }
     }

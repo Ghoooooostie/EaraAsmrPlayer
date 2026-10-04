@@ -112,6 +112,12 @@ internal class SubtitleTranslationException(
     message: String,
     val retryable: Boolean,
     val retryAfterMs: Long? = null,
+    /** 服务端以 413/431 拒绝了请求体：agent 循环应缩小窗口与历史后重试，而不是直接失败。 */
+    val payloadTooLarge: Boolean = false,
+    /** 413 响应体里解析出的「本次请求 token 数」（如 Groq 的 Requested 8010）。 */
+    val requestedTokens: Int? = null,
+    /** 413 响应体里解析出的「该端点/模型允许的最大 token 数」（如 Groq 的 Limit 8000）。 */
+    val limitTokens: Int? = null,
     cause: Throwable? = null
 ) : IOException(message, cause)
 
@@ -130,6 +136,8 @@ internal class SubtitleTranslationClient(
     }
     private val providerLabel = if (apiUrl == DEEPSEEK_CHAT_COMPLETIONS_URL) "DeepSeek" else "自定义 AI"
     private val authorization = "Bearer $normalizedApiKey"
+    /** 最近一次实际发出的请求体字节数，用于 413 等体积类失败的诊断提示。 */
+    private var lastRequestBodyBytes: Int = 0
     private val callFactory: Call.Factory = okHttpClient.newBuilder()
         .connectTimeout(20, TimeUnit.SECONDS)
         .readTimeout(5, TimeUnit.MINUTES)
@@ -167,15 +175,47 @@ internal class SubtitleTranslationClient(
             workContext = workContext,
             scriptContext = scriptContext
         ).toMutableList()
+        val initialMessages = messages.toList()
         var stalledTurnCount = 0
+        var payloadLevel = 0
+        var readWindowSize = SUBTITLE_READ_WINDOW_STEPS.first()
+        var historyKeepBlocks = AGENT_HISTORY_KEEP_STEPS.first()
         while (confirmedSourceCount < sources.size) {
-            messages = trimAgentHistory(messages).toMutableList()
-            val response = requestSubtitleAgentResponse(
-                messages = messages,
-                targetIndices = sources.drop(confirmedSourceCount).map(GeneratedSubtitleSource::index),
-                scriptContext = scriptContext
-            )
-            messages += response.assistantMessage
+            messages = trimAgentHistory(messages, historyKeepBlocks).toMutableList()
+            val response = try {
+                requestSubtitleAgentResponse(
+                    messages = messages,
+                    targetIndices = sources.drop(confirmedSourceCount).map(GeneratedSubtitleSource::index),
+                    scriptContext = scriptContext
+                )
+            } catch (tooLarge: SubtitleTranslationException) {
+                if (!tooLarge.payloadTooLarge || payloadLevel >= MAX_PAYLOAD_DOWNGRADES) throw tooLarge
+                // 若端点返回了「允许上限 / 本次请求量」，按线性缩放直接跳到合适的窗口，
+                // 省去 64→32→16→8 这样一连串注定失败的 413 往返（Groq 免费档尤其慢）。
+                if (tooLarge.limitTokens != null && tooLarge.requestedTokens != null && tooLarge.requestedTokens > 0) {
+                    val targetWindow = (readWindowSize * tooLarge.limitTokens / tooLarge.requestedTokens).coerceAtLeast(1)
+                    val jumped = SUBTITLE_READ_WINDOW_STEPS.indexOfLast { it <= targetWindow }.coerceAtLeast(0)
+                    payloadLevel = payloadLevel.coerceAtLeast(jumped)
+                } else {
+                    payloadLevel += 1
+                }
+                payloadLevel = payloadLevel.coerceAtMost(MAX_PAYLOAD_DOWNGRADES)
+                readWindowSize = SUBTITLE_READ_WINDOW_STEPS.getOrElse(payloadLevel) { SUBTITLE_READ_WINDOW_STEPS.last() }
+                historyKeepBlocks = AGENT_HISTORY_KEEP_STEPS.getOrElse(payloadLevel) { AGENT_HISTORY_KEEP_STEPS.last() }
+                Log.w(
+                    TAG,
+                    "字幕翻译请求体过大（413），已降级重试：level=$payloadLevel, " +
+                        "readWindow=$readWindowSize, historyBlocks=$historyKeepBlocks, " +
+                        "confirmedSourceCount=$confirmedSourceCount/${sources.size}" +
+                        if (tooLarge.limitTokens != null && tooLarge.requestedTokens != null) {
+                            " (requested=${tooLarge.requestedTokens}, limit=${tooLarge.limitTokens})"
+                        } else ""
+                )
+                messages = initialMessages.toMutableList()
+                stalledTurnCount = 0
+                continue
+            }
+            messages += sanitizeAssistantMessageForHistory(response.assistantMessage)
             val toolCalls = response.assistantMessage.toolCalls.orEmpty()
             var madeProgress = false
             if (toolCalls.isEmpty()) {
@@ -198,14 +238,15 @@ internal class SubtitleTranslationClient(
                             gson = gson,
                             toolCallId = toolCallId,
                             sources = sources,
-                            confirmedCaptions = confirmed
+                            confirmedCaptions = confirmed,
+                            windowSize = readWindowSize
                         )
 
                         SUBTITLE_WRITE_TOOL_NAME -> {
                             // 窗口化写入：只允许写出当前读窗口内的字幕，杜绝模型一次写出整条音轨撑爆请求体（Groq 413）。
                             // read 已窗口化，但 write 接受「整段剩余」时模型仍可能把已读到的全部字幕回显进参数，单条请求即超限。
                             val remainingSources = sources.drop(confirmedSourceCount)
-                            val writeWindowSources = remainingSources.take(SUBTITLE_READ_WINDOW_SIZE)
+                            val writeWindowSources = remainingSources.take(readWindowSize)
                             val parsed = runCatching {
                                 parseSubtitleWriteToolArguments(
                                     arguments = toolCall.function.arguments.orEmpty(),
@@ -230,10 +271,14 @@ internal class SubtitleTranslationClient(
                                     )
                                 },
                                 onFailure = { error ->
+                                    val expectedCount = writeWindowSources.size
+                                    val startIdx = writeWindowSources.firstOrNull()?.index ?: confirmedSourceCount
+                                    val hint = "请从 index $startIdx 开始，只提交接下来的最多 $expectedCount 条字幕" +
+                                        "（必须是从首个未确认索引起的连续前缀，不要一次性提交全部未译字幕）。"
                                     buildSubtitleToolErrorMessage(
                                         gson = gson,
                                         toolCallId = toolCallId,
-                                        message = error.message.orEmpty().ifBlank { "字幕参数无效" }
+                                        message = error.message?.takeIf { it.isNotBlank() }?.let { "$it。$hint" } ?: hint
                                     )
                                 }
                             )
@@ -360,19 +405,38 @@ internal class SubtitleTranslationClient(
             tracks = tracks,
             workContext = workContext
         ).toMutableList()
+        val initialMessages = messages.toList()
         val polishedByCaptionId = HashMap<Long, String>()
         // 服务端维护读取游标：read 每次翻页，直至全部条目展示完毕即视为检查完成。
         var nextReadOffset = 0
         var readCompleted = false
         var stalledTurnCount = 0
+        var payloadLevel = 0
+        var readPageSize = POLISH_READ_PAGE_STEPS.first()
+        var historyKeepBlocks = AGENT_HISTORY_KEEP_STEPS.first()
         while (!readCompleted) {
-            messages = trimAgentHistory(messages).toMutableList()
-            val response = requestSubtitleAgentResponse(
-                messages = messages,
-                targetIndices = emptyList(),
-                polishMode = true
-            )
-            messages += response.assistantMessage
+            messages = trimAgentHistory(messages, historyKeepBlocks).toMutableList()
+            val response = try {
+                requestSubtitleAgentResponse(
+                    messages = messages,
+                    targetIndices = emptyList(),
+                    polishMode = true
+                )
+            } catch (tooLarge: SubtitleTranslationException) {
+                if (!tooLarge.payloadTooLarge || payloadLevel >= MAX_PAYLOAD_DOWNGRADES) throw tooLarge
+                payloadLevel += 1
+                readPageSize = POLISH_READ_PAGE_STEPS.getOrElse(payloadLevel) { POLISH_READ_PAGE_STEPS.last() }
+                historyKeepBlocks = AGENT_HISTORY_KEEP_STEPS.getOrElse(payloadLevel) { AGENT_HISTORY_KEEP_STEPS.last() }
+                Log.w(
+                    TAG,
+                    "字幕润色请求体过大（413），已降级重试：level=$payloadLevel, " +
+                        "readPage=$readPageSize, historyBlocks=$historyKeepBlocks, offset=$nextReadOffset"
+                )
+                messages = initialMessages.toMutableList()
+                stalledTurnCount = 0
+                continue
+            }
+            messages += sanitizeAssistantMessageForHistory(response.assistantMessage)
             val toolCalls = response.assistantMessage.toolCalls.orEmpty()
             var madeProgress = false
             if (toolCalls.isEmpty()) {
@@ -397,11 +461,12 @@ internal class SubtitleTranslationClient(
                                 toolCallId = toolCallId,
                                 tracks = tracks,
                                 polishedByCaptionId = polishedByCaptionId,
-                                offset = nextReadOffset
+                                offset = nextReadOffset,
+                                pageSize = readPageSize
                             )
                             // read 翻页：每次调用展示一页，游标前进；全部展示完则完成。
                             if (nextReadOffset < allCaptions.size) {
-                                nextReadOffset = (nextReadOffset + POLISH_READ_PAGE_SIZE)
+                                nextReadOffset = (nextReadOffset + readPageSize)
                                     .coerceAtMost(allCaptions.size)
                                 madeProgress = true
                             } else {
@@ -505,6 +570,14 @@ internal class SubtitleTranslationClient(
         targetIndices: List<Int>,
         parseMessage: (DeepSeekChatMessage, finishReason: String?) -> T
     ): T = withContext(Dispatchers.IO) {
+        val requestBodyBytes = requestBody.toByteArray(Charsets.UTF_8).size
+        lastRequestBodyBytes = requestBodyBytes
+        if (requestBodyBytes > REQUEST_BODY_LOG_THRESHOLD_BYTES) {
+            Log.w(
+                TAG,
+                "$providerLabel 翻译请求体较大：${requestBodyBytes / 1024} KB, model=$model, url=$apiUrl"
+            )
+        }
         val request = Request.Builder()
             .url(apiUrl)
             .header("Authorization", authorization)
@@ -531,15 +604,26 @@ internal class SubtitleTranslationClient(
             response.use {
                 val raw = it.body?.string().orEmpty()
                 if (!it.isSuccessful) {
+                    Log.w(
+                        TAG,
+                        "翻译请求失败 status=${it.code} requestBytes=$requestBodyBytes " +
+                            "model=$model url=$apiUrl resp=${raw.take(300)}"
+                    )
                     val failure = SubtitleFailureMessages.deepSeekHttp(
                         statusCode = it.code,
                         serviceMessage = parseDeepSeekErrorMessage(raw),
-                        providerLabel = providerLabel
+                        providerLabel = providerLabel,
+                        requestBytes = requestBodyBytes
                     )
+                    val requestedTokens = if (failure.payloadTooLarge) parseTokenNumber(raw, "Requested") else null
+                    val limitTokens = if (failure.payloadTooLarge) parseTokenNumber(raw, "Limit") else null
                     throw SubtitleTranslationException(
                         message = failure.message,
                         retryable = failure.retryable,
-                        retryAfterMs = parseRetryAfterMillis(it.header("Retry-After"))
+                        retryAfterMs = parseRetryAfterMillis(it.header("Retry-After")),
+                        payloadTooLarge = failure.payloadTooLarge,
+                        requestedTokens = requestedTokens,
+                        limitTokens = limitTokens
                     )
                 }
                 val deepSeekResponse = runCatching {
@@ -654,6 +738,18 @@ internal fun parseDeepSeekErrorMessage(raw: String): String? {
         .takeIf(String::isNotEmpty)
 }
 
+/**
+ * 从 413 响应体里尽力解析形如 `Limit 8000` / `Requested 8010` 的数字。
+ * Groq 等端点在请求超限时会在 error.message 中给出「允许上限」与「本次请求量」，
+ * 据此可以一步跳到合适的窗口，省去逐级试探的失败往返。解析失败返回 null。
+ */
+private fun parseTokenNumber(raw: String, label: String): Int? {
+    val pattern = Regex("""$label\s*[:=(]?\s*(\d[\d,]*)\b""")
+    return pattern.find(raw)?.groupValues?.getOrNull(1)
+        ?.replace(",", "")
+        ?.toIntOrNull()
+}
+
 internal fun parseRetryAfterMillis(
     value: String?,
     nowMs: Long = System.currentTimeMillis()
@@ -690,6 +786,19 @@ private const val SUBTITLE_READ_WINDOW_SIZE = 64
 // 把请求体积钉死，避免长音轨多轮后历史累积触发 HTTP 413。
 private const val AGENT_HISTORY_KEEP_BLOCKS = 4
 private const val POLISH_READ_PAGE_SIZE = 40
+// 不同端点对单次请求体上限差异极大（部分 OpenAI 兼容网关/中转站只有几十 KB）。
+// 收到 413 时按下面阶梯逐级缩小窗口与历史深度，并丢弃已累积的历史重开会话，
+// 用更小的请求体继续翻译，而不是直接判定任务失败。
+// 窗口阶梯一路降到 1：Groq 的 gpt-oss-20b 等模型单请求输入上限只有几千 token，
+// 大到 8 条仍会 413，必须能继续缩到 4/2/1 才能塞进限制。
+private val SUBTITLE_READ_WINDOW_STEPS = listOf(64, 32, 16, 8, 4, 2, 1)
+// 历史块下限保持 1（不能到 0）：否则刚读回的字幕会被裁掉，模型陷入反复 read 死循环。
+private val AGENT_HISTORY_KEEP_STEPS = listOf(4, 2, 1, 1, 1, 1, 1)
+private val POLISH_READ_PAGE_STEPS = listOf(POLISH_READ_PAGE_SIZE, 20, 10)
+// 与上面两个阶梯的长度（7）一致，保证 readWindow 能一路降到 1。
+internal const val MAX_PAYLOAD_DOWNGRADES = 6
+// 请求体超过该阈值时打一条日志，便于在 logcat 里核对端点上限。
+private const val REQUEST_BODY_LOG_THRESHOLD_BYTES = 48 * 1024
 private const val SCRIPT_READ_DEFAULT_LIMIT = 4_000
 private const val SCRIPT_READ_MAX_LIMIT = 8_000
 
@@ -956,9 +1065,11 @@ internal fun buildPolishReadToolResultMessage(
     toolCallId: String,
     tracks: List<PolishTrackInput>,
     polishedByCaptionId: Map<Long, String>,
-    offset: Int
+    offset: Int,
+    pageSize: Int = POLISH_READ_PAGE_SIZE
 ): DeepSeekChatMessage {
     require(toolCallId.isNotBlank())
+    require(pageSize > 0)
     val allCaptions = tracks.flatMap(PolishTrackInput::captions)
     val trackSummaries = tracks.mapIndexed { index, track ->
         val polishedCount = track.captions.count { it.captionId in polishedByCaptionId }
@@ -970,11 +1081,11 @@ internal fun buildPolishReadToolResultMessage(
             "polished_count" to polishedCount
         )
     }
-    val page = allCaptions.drop(offset).take(POLISH_READ_PAGE_SIZE)
+    val page = allCaptions.drop(offset).take(pageSize)
     val result = buildMap<String, Any> {
         put("tracks", trackSummaries)
         put("offset", offset)
-        put("page_size", POLISH_READ_PAGE_SIZE)
+        put("page_size", pageSize)
         put(
             "subtitles",
             page.map { caption ->
@@ -1093,16 +1204,19 @@ internal fun buildSubtitleReadToolResultMessage(
     gson: Gson,
     toolCallId: String,
     sources: List<GeneratedSubtitleSource>,
-    confirmedCaptions: List<GeneratedSubtitleCaption>
+    confirmedCaptions: List<GeneratedSubtitleCaption>,
+    windowSize: Int = SUBTITLE_READ_WINDOW_SIZE
 ): DeepSeekChatMessage {
     require(toolCallId.isNotBlank())
+    require(windowSize > 0)
     val confirmedSourceCount = confirmedCaptions.sumOf { it.sourceIndices.size }
     require(confirmedSourceCount in 0..sources.size)
     val nextSource = sources.getOrNull(confirmedSourceCount)
     // 窗口化：只回传从已确认位置起的下一窗日文字幕，已完成字幕也只回传最近一窗，
     // 把单轮请求体积钉死，避免循环累积导致 Groq 等服务返回 HTTP 413。
+    // windowSize 由调用方在收到 413 时逐级下调（见 SUBTITLE_READ_WINDOW_STEPS）。
     val windowStart = confirmedSourceCount
-    val windowEnd = (confirmedSourceCount + SUBTITLE_READ_WINDOW_SIZE).coerceAtMost(sources.size)
+    val windowEnd = (confirmedSourceCount + windowSize).coerceAtMost(sources.size)
     val result = buildMap<String, Any> {
         put(
             "japanese_subtitles",
@@ -1117,7 +1231,7 @@ internal fun buildSubtitleReadToolResultMessage(
         )
         put(
             "completed_chinese_subtitles",
-            confirmedCaptions.takeLast(SUBTITLE_READ_WINDOW_SIZE).map { caption ->
+            confirmedCaptions.takeLast(windowSize).map { caption ->
                 mapOf(
                     "source_indices" to caption.sourceIndices,
                     "start_ms" to caption.startMs,
@@ -1168,6 +1282,49 @@ private fun trimAgentHistory(
     if (blocks.size <= keepBlocks) return messages
     return head + blocks.takeLast(keepBlocks).flatten()
 }
+
+/**
+ * 把模型本轮返回的 assistant 消息压缩后再回传，避免把模型一次写出的大量字幕原样塞回
+ * 下一轮请求体（Groq 等服务对单次请求体积有上限，整段回传会触发 HTTP 413）。
+ * - 翻译/润色的 write 工具调用参数只保留条数摘要（字幕已落进本地 confirmed 列表，模型无需回看全文）；
+ * - 一并清掉 reasoning_content（思维链无需回传，且可能很长）。
+ * tool_call id 保持不变，以与对应的 tool result 配对，不破坏 OpenAI 消息格式。
+ * 模型每轮重新 read 当前窗口，故裁剪其历史输出不影响进度推进。
+ */
+private fun sanitizeAssistantMessageForHistory(message: DeepSeekChatMessage): DeepSeekChatMessage {
+    val sanitizedCalls = message.toolCalls?.map { call ->
+        when (call.function.name) {
+            SUBTITLE_WRITE_TOOL_NAME -> {
+                val written = runCatching {
+                    JsonParser.parseString(call.function.arguments.orEmpty()).asJsonObject
+                        .getAsJsonArray("captions")?.size() ?: 0
+                }.getOrDefault(0)
+                call.copy(function = call.function.copy(arguments = """{"captions_written":$written}"""))
+            }
+
+            POLISH_WRITE_TOOL_NAME -> {
+                val written = runCatching {
+                    JsonParser.parseString(call.function.arguments.orEmpty()).asJsonObject
+                        .getAsJsonArray("captions")?.size() ?: 0
+                }.getOrDefault(0)
+                call.copy(function = call.function.copy(arguments = """{"captions_written":$written}"""))
+            }
+
+            else -> call
+        }
+    }
+    // content 一并截断：模型未走工具调用、而把整段文本塞进 content 时，同样会被回传撑爆请求体。
+    val cappedContent = message.content?.let { content ->
+        if (content.length > MAX_ASSISTANT_ECHO_CHARS) {
+            content.take(MAX_ASSISTANT_ECHO_CHARS) + "…[已截断]"
+        } else {
+            content
+        }
+    }
+    return message.copy(toolCalls = sanitizedCalls, content = cappedContent, reasoningContent = null)
+}
+
+private const val MAX_ASSISTANT_ECHO_CHARS = 2000
 
 internal fun buildSubtitleWriteToolResultMessage(
     gson: Gson,

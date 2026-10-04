@@ -1321,7 +1321,7 @@ class PlaybackService : MediaSessionService() {
                 )
             }
             withContext(Dispatchers.Main.immediate) {
-                if (overlayNeeded) overlay?.updateLine(text = current, cue = entry, annotated = annotated)
+                if (overlayNeeded) overlay?.updateLine(current = current, cue = entry, annotated = annotated)
             }
         }
 

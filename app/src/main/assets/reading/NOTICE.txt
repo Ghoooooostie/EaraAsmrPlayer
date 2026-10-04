@@ -1,0 +1,15 @@
+Japanese reading dictionary (app/src/main/assets/reading/)
+=============================================================
+
+Data: JMdict electronic dictionary (JMdict-Eng), maintained by the
+Electronic Dictionary Research and Development Group.
+License: Creative Commons Attribution-ShareAlike 4.0 Generic (CC-BY-SA 4.0).
+
+Modifications: kept only entries whose written form contains kanji, took the
+hiragana reading (r_ele/reb) for each written form, deduplicated by
+(surface, reading), truncated to the most frequent entries to fit a 3 MB
+budget, and derived a single-kanji fallback table from entries containing
+exactly one kanji. Sorted by surface form and gzip compressed.
+
+This derivative is distributed under CC-BY-SA 4.0.
+Full license: https://creativecommons.org/licenses/by-sa/4.0/legalcode

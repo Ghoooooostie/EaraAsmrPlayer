@@ -903,6 +903,149 @@ class SubtitleTranslationClientTest {
         }
     }
 
+    @Test
+    fun translateSubtitles_shrinksWindowAndRestartsConversationAfterPayloadTooLarge() = runBlocking {
+        val gson = Gson()
+        val allSources = sources(40)
+        val requestBodies = mutableListOf<String>()
+        val readWindowSizes = mutableListOf<Int>()
+        val responses = ArrayDeque(
+            listOf(
+                toolCallResponse("read-1", SUBTITLE_READ_TOOL_NAME, "先读取当前窗口。", "{}"),
+                toolCallResponse("read-2", SUBTITLE_READ_TOOL_NAME, "重试读取。", "{}"),
+                toolCallResponse("read-3", SUBTITLE_READ_TOOL_NAME, "缩小窗口后读取。", "{}"),
+                toolCallResponse("write-1", SUBTITLE_WRITE_TOOL_NAME, "写入第一批。", writeArgs(allSources, 0, 16)),
+                toolCallResponse("write-2", SUBTITLE_WRITE_TOOL_NAME, "写入第二批。", writeArgs(allSources, 16, 32)),
+                toolCallResponse("write-3", SUBTITLE_WRITE_TOOL_NAME, "写入最后一批。", writeArgs(allSources, 32, 40))
+            )
+        )
+        val httpClient = OkHttpClient.Builder()
+            .addInterceptor { chain ->
+                val body = Buffer().also { chain.request().body?.writeTo(it) }.readUtf8()
+                requestBodies += body
+                val windowSize = japaneseWindowSizeOf(body)
+                if (windowSize != null) readWindowSizes += windowSize
+                // 模拟端点单次请求体上限：只放得下 24 条字幕的窗口，超过就回 413。
+                val tooLarge = windowSize != null && windowSize > 24
+                Response.Builder()
+                    .request(chain.request())
+                    .protocol(Protocol.HTTP_1_1)
+                    .code(if (tooLarge) 413 else 200)
+                    .message(if (tooLarge) "Payload Too Large" else "OK")
+                    .body(
+                        (if (tooLarge) {
+                            """{"error":{"message":"Request Entity Too Large"}}"""
+                        } else {
+                            responses.removeFirst()
+                        }).toResponseBody("application/json".toMediaType())
+                    )
+                    .build()
+            }
+            .build()
+        val client = SubtitleTranslationClient(
+            okHttpClient = httpClient,
+            gson = gson,
+            apiKey = "test-key",
+            apiUrl = "https://example.test/chat"
+        )
+
+        val result = client.translateSubtitles(
+            sources = allSources,
+            allowMerging = false,
+            onCaptionsConfirmed = {}
+        )
+
+        assertEquals(40, result.size)
+        // 64 → 32 → 16 逐级缩窗后成功，不再抛 413。
+        assertEquals(listOf(40, 32, 16), readWindowSizes.distinct())
+        // 每次降级都丢弃已累积历史，重开为 system + 初始 user 两条消息。
+        val messagesAfterDowngrade = JsonParser.parseString(requestBodies[2])
+            .asJsonObject.getAsJsonArray("messages")
+        assertEquals(2, messagesAfterDowngrade.size())
+    }
+
+    @Test
+    fun translateSubtitles_reportsPayloadLimitWhenEveryDowngradeStillRejected() = runBlocking {
+        val allSources = sources(40)
+        val responses = ArrayDeque(
+            List(MAX_PAYLOAD_DOWNGRADES + 1) { index ->
+                toolCallResponse("read-$index", SUBTITLE_READ_TOOL_NAME, "读取。", "{}")
+            }
+        )
+        val httpClient = OkHttpClient.Builder()
+            .addInterceptor { chain ->
+                val body = Buffer().also { chain.request().body?.writeTo(it) }.readUtf8()
+                // 端点无论如何都拒绝带 read 结果的请求体：模拟缩到最小窗口仍然超限。
+                val tooLarge = japaneseWindowSizeOf(body) != null
+                Response.Builder()
+                    .request(chain.request())
+                    .protocol(Protocol.HTTP_1_1)
+                    .code(if (tooLarge) 413 else 200)
+                    .message(if (tooLarge) "Payload Too Large" else "OK")
+                    .body(
+                        (if (tooLarge) {
+                            """{"error":{"message":"Request Entity Too Large"}}"""
+                        } else {
+                            responses.removeFirst()
+                        }).toResponseBody("application/json".toMediaType())
+                    )
+                    .build()
+            }
+            .build()
+        val client = SubtitleTranslationClient(
+            okHttpClient = httpClient,
+            gson = Gson(),
+            apiKey = "test-key",
+            apiUrl = "https://example.test/chat"
+        )
+
+        val error = runCatching {
+            runBlocking {
+                client.translateSubtitles(
+                    sources = allSources,
+                    allowMerging = false,
+                    onCaptionsConfirmed = {}
+                )
+            }
+        }.exceptionOrNull()
+
+        val failure = requireNotNull(error as? SubtitleTranslationException) {
+            "期望 SubtitleTranslationException，实际：$error"
+        }
+        assert(failure.payloadTooLarge)
+        val message = requireNotNull(failure.message)
+        assert(message.contains("请求体"))
+        assert(message.contains("KB"))
+    }
+
+    private fun writeArgs(
+        allSources: List<GeneratedSubtitleSource>,
+        from: Int,
+        to: Int
+    ): String {
+        val captions = allSources.subList(from, to).joinToString(",") { source ->
+            """{"source_indices":[${source.index}],"start_ms":${source.startMs},"end_ms":${source.endMs},""" +
+                """"japanese":"${source.text}","chinese":"中文${source.index}"}"""
+        }
+        return """{"captions":[$captions]}"""
+    }
+
+    /** 从请求体里读出 read 工具回传的日文窗口条数；没有 read 结果时返回 null。 */
+    private fun japaneseWindowSizeOf(requestBody: String): Int? {
+        val messages = runCatching {
+            JsonParser.parseString(requestBody).asJsonObject.getAsJsonArray("messages")
+        }.getOrNull() ?: return null
+        messages.forEach { element ->
+            val message = element.asJsonObject
+            if (message.get("role")?.asString != "tool") return@forEach
+            val content = runCatching {
+                JsonParser.parseString(message.get("content").asString).asJsonObject
+            }.getOrNull() ?: return@forEach
+            content.getAsJsonArray("japanese_subtitles")?.let { return it.size() }
+        }
+        return null
+    }
+
     private fun sources(count: Int): List<GeneratedSubtitleSource> = List(count) { index ->
         GeneratedSubtitleSource(
             index = index,
@@ -960,4 +1103,70 @@ class SubtitleTranslationClientTest {
             )
         )
     )
+
+    /**
+     * 精确复现用户线上故障：Groq `openai/gpt-oss-20b` 单请求输入 token 上限仅 8000，
+     * 且 413 响应体里给出 `Limit 8000, Requested NNNN`。
+     * 旧实现降级阶梯最小只到 readWindow=8，在窗口=8 时仍 Requested 8010 > 8000，
+     * 且降级次数用尽直接判失败 → 永远卡 413。本测试证明：
+     * 阶梯下限降到 1 + 按 Requested/Limit 智能跳窗后，能自动缩到 ≤4 并翻译成功。
+     */
+    @Test
+    fun translateSubtitles_shrinksToSmallWindowForGroq8000TokenLimit() = runBlocking {
+        // 模拟 Groq 计费：固定开销 7000 + 每源 130 token；窗口 ≤4 时请求量 < 8000 才放行。
+        val allSources = sources(89)
+        val readWindowSizes = mutableListOf<Int>()
+        val responses = ArrayDeque(
+            listOf(
+                toolCallResponse("read-0", SUBTITLE_READ_TOOL_NAME, "读取。", "{}"),
+                toolCallResponse("read-1", SUBTITLE_READ_TOOL_NAME, "读取。", "{}"),
+                toolCallResponse("read-2", SUBTITLE_READ_TOOL_NAME, "读取。", "{}"),
+                toolCallResponse("read-3", SUBTITLE_READ_TOOL_NAME, "读取。", "{}"),
+                toolCallResponse("read-4", SUBTITLE_READ_TOOL_NAME, "读取。", "{}"),
+                toolCallResponse("write-0", SUBTITLE_WRITE_TOOL_NAME, "写入。", writeArgs(allSources, 0, allSources.size))
+            )
+        )
+        val httpClient = OkHttpClient.Builder()
+            .addInterceptor { chain ->
+                val body = Buffer().also { chain.request().body?.writeTo(it) }.readUtf8()
+                val windowSize = japaneseWindowSizeOf(body)
+                if (windowSize != null) readWindowSizes += windowSize
+                val requested = if (windowSize != null) 7000 + windowSize * 130 else 0
+                val tooLarge = windowSize != null && requested > 8000
+                Response.Builder()
+                    .request(chain.request())
+                    .protocol(Protocol.HTTP_1_1)
+                    .code(if (tooLarge) 413 else 200)
+                    .message(if (tooLarge) "Payload Too Large" else "OK")
+                    .body(
+                        (if (tooLarge) {
+                            """{"error":{"message":"Request too large for model `openai/gpt-oss-20b`. TPM: Limit 8000, Requested $requested"}}"""
+                        } else {
+                            responses.removeFirst()
+                        }).toResponseBody("application/json".toMediaType())
+                    )
+                    .build()
+            }
+            .build()
+        val client = SubtitleTranslationClient(
+            okHttpClient = httpClient,
+            gson = Gson(),
+            apiKey = "test-key",
+            apiUrl = "https://example.test/chat"
+        )
+
+        val result = client.translateSubtitles(
+            sources = allSources,
+            allowMerging = false,
+            onCaptionsConfirmed = {}
+        )
+
+        assertEquals(allSources.size, result.size)
+        // 必须降到 ≤4 才满足 8000 上限，证明「阶梯下限=1」生效；旧实现会卡在 window=8 直接失败。
+        assert(readWindowSizes.min() <= 4) {
+            "最小读取窗口=${readWindowSizes.min()}，未降到 8000 token 上限以内（readWindowSizes=$readWindowSizes）"
+        }
+        // 且确实经历了 413 触发的降级（不是靠运气一次成功）。
+        assert(readWindowSizes.size >= 2) { "未触发任何 413 降级" }
+    }
 }

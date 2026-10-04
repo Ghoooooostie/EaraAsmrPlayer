@@ -10,6 +10,10 @@ import com.asmr.player.util.ReadingSource
 import com.asmr.player.util.SubtitleBilingualOrder
 import com.asmr.player.util.SubtitleDisplayMode
 import com.asmr.player.util.SubtitleEntry
+import com.asmr.player.util.displaySegmentsFor
+import com.asmr.player.util.displayText
+import com.asmr.player.util.displaySegmentsFor
+import com.asmr.player.util.displayText
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Test

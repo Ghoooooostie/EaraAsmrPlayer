@@ -68,19 +68,32 @@ class ReadingDictionary @Inject constructor(
             }
             val parsed = ReadingDictionaryIndex.parse(words, kanji)
             check(parsed.ready) { "furigana dictionary is empty" }
+            Log.i(TAG, "DIAG dictionary ready: ${words.size} word lines, ${kanji.size} kanji lines")
             parsed
         }
 
-    private fun readLines(asset: String, open: (String) -> InputStream): List<String> =
-        open(asset).use { stream ->
-            GZIPInputStream(stream).bufferedReader(Charsets.UTF_8).use { reader ->
-                reader.readLines()
+    /**
+     * 按 gzip 魔数自适应解码。
+     *
+     * 源资产是 `words.gz`，但 aapt2 打包资产时会剥掉 `.gz` 后缀，并在多数版本里
+     * 顺带把 gzip 解开——真机与 Robolectric 读到的都是**明文** `reading/words`。
+     * 这里同时兼容两种字节：1f 8b 走 GZIP，否则按 UTF-8 明文读，任何一种都不会崩。
+     */
+    private fun readLines(asset: String, open: (String) -> InputStream): List<String> {
+        val bytes = open(asset).use { it.readBytes() }
+        val stream =
+            if (bytes.size >= 2 && bytes[0] == 0x1f.toByte() && bytes[1] == 0x8b.toByte()) {
+                GZIPInputStream(bytes.inputStream())
+            } else {
+                bytes.inputStream()
             }
-        }
+        return stream.bufferedReader(Charsets.UTF_8).use { it.readLines() }
+    }
 
     companion object {
         private const val TAG = "ReadingDictionary"
-        const val WORDS_ASSET = "reading/words.gz"
-        const val KANJI_ASSET = "reading/kanji.gz"
+        // 打包后的资产名（aapt2 会剥掉源文件的 .gz 后缀）。
+        const val WORDS_ASSET = "reading/words"
+        const val KANJI_ASSET = "reading/kanji"
     }
 }
