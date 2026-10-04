@@ -148,8 +148,12 @@ android {
     }
     testOptions {
         unitTests.isIncludeAndroidResources = true
+        unitTests.isReturnDefaultValues = true
         unitTests.all {
             it.systemProperty("asmr.latency", (project.findProperty("asmr.latency") as? String).orEmpty())
+            it.testLogging {
+                events("passed", "failed", "standardOut", "standardError")
+            }
         }
     }
     packaging {

@@ -331,10 +331,8 @@ class SubtitleTranslationClientTest {
         assertEquals(1, confirmedBatches.size)
         val secondMessages = JsonParser.parseString(requestBodies[1]).asJsonObject.getAsJsonArray("messages")
         assertEquals(4, secondMessages.size())
-        assertEquals(
-            "先读取完整字幕。",
-            secondMessages[2].asJsonObject.get("reasoning_content").asString
-        )
+        // assistant 历史经 sanitize 后 reasoning_content 被剥离（防止回传撑爆小限额端点的请求体）
+        assertNull(secondMessages[2].asJsonObject.get("reasoning_content"))
         assertEquals("call-1", secondMessages[3].asJsonObject.get("tool_call_id").asString)
         val readResult = JsonParser.parseString(secondMessages[3].asJsonObject.get("content").asString).asJsonObject
         assertEquals(2, readResult.getAsJsonArray("japanese_subtitles").size())
@@ -914,6 +912,9 @@ class SubtitleTranslationClientTest {
                 toolCallResponse("read-1", SUBTITLE_READ_TOOL_NAME, "先读取当前窗口。", "{}"),
                 toolCallResponse("read-2", SUBTITLE_READ_TOOL_NAME, "重试读取。", "{}"),
                 toolCallResponse("read-3", SUBTITLE_READ_TOOL_NAME, "缩小窗口后读取。", "{}"),
+                // 降级阶梯多了 96/64 两档，多备一次 read：窗口缩到 16 后还能看到一次
+                // 「带 read 结果且被放行」的请求，从而断言窗口确实降到了 16。
+                toolCallResponse("read-4", SUBTITLE_READ_TOOL_NAME, "已降到可放行窗口。", "{}"),
                 toolCallResponse("write-1", SUBTITLE_WRITE_TOOL_NAME, "写入第一批。", writeArgs(allSources, 0, 16)),
                 toolCallResponse("write-2", SUBTITLE_WRITE_TOOL_NAME, "写入第二批。", writeArgs(allSources, 16, 32)),
                 toolCallResponse("write-3", SUBTITLE_WRITE_TOOL_NAME, "写入最后一批。", writeArgs(allSources, 32, 40))
@@ -956,7 +957,7 @@ class SubtitleTranslationClientTest {
         )
 
         assertEquals(40, result.size)
-        // 64 → 32 → 16 逐级缩窗后成功，不再抛 413。
+        // 96/64 → 40 → 32 → 16 逐级缩窗后成功，不再抛 413（首档被源字幕数 40 截断）。
         assertEquals(listOf(40, 32, 16), readWindowSizes.distinct())
         // 每次降级都丢弃已累积历史，重开为 system + 初始 user 两条消息。
         val messagesAfterDowngrade = JsonParser.parseString(requestBodies[2])
@@ -1109,23 +1110,15 @@ class SubtitleTranslationClientTest {
      * 且 413 响应体里给出 `Limit 8000, Requested NNNN`。
      * 旧实现降级阶梯最小只到 readWindow=8，在窗口=8 时仍 Requested 8010 > 8000，
      * 且降级次数用尽直接判失败 → 永远卡 413。本测试证明：
-     * 阶梯下限降到 1 + 按 Requested/Limit 智能跳窗后，能自动缩到 ≤4 并翻译成功。
+     * 按 Requested/Limit 智能跳窗 + 写入窗口化后，能自动缩到塞进上限的窗口并翻译成功。
+     * （固定开销 7000 + 每源 130 token 时，窗口 16 → Requested 7080 即可放行。）
      */
     @Test
     fun translateSubtitles_shrinksToSmallWindowForGroq8000TokenLimit() = runBlocking {
-        // 模拟 Groq 计费：固定开销 7000 + 每源 130 token；窗口 ≤4 时请求量 < 8000 才放行。
+        // 模拟 Groq 计费：固定开销 7000 + 每源 130 token。
         val allSources = sources(89)
         val readWindowSizes = mutableListOf<Int>()
-        val responses = ArrayDeque(
-            listOf(
-                toolCallResponse("read-0", SUBTITLE_READ_TOOL_NAME, "读取。", "{}"),
-                toolCallResponse("read-1", SUBTITLE_READ_TOOL_NAME, "读取。", "{}"),
-                toolCallResponse("read-2", SUBTITLE_READ_TOOL_NAME, "读取。", "{}"),
-                toolCallResponse("read-3", SUBTITLE_READ_TOOL_NAME, "读取。", "{}"),
-                toolCallResponse("read-4", SUBTITLE_READ_TOOL_NAME, "读取。", "{}"),
-                toolCallResponse("write-0", SUBTITLE_WRITE_TOOL_NAME, "写入。", writeArgs(allSources, 0, allSources.size))
-            )
-        )
+        var readTurn = 0
         val httpClient = OkHttpClient.Builder()
             .addInterceptor { chain ->
                 val body = Buffer().also { chain.request().body?.writeTo(it) }.readUtf8()
@@ -1133,18 +1126,40 @@ class SubtitleTranslationClientTest {
                 if (windowSize != null) readWindowSizes += windowSize
                 val requested = if (windowSize != null) 7000 + windowSize * 130 else 0
                 val tooLarge = windowSize != null && requested > 8000
+                val responseBody = if (tooLarge) {
+                    """{"error":{"message":"Request too large for model `openai/gpt-oss-20b`. TPM: Limit 8000, Requested $requested"}}"""
+                } else {
+                    // 内容驱动伪模型：最后一条消息是 read 结果就回写这一窗，否则继续 read。
+                    val lastMessage = runCatching {
+                        JsonParser.parseString(body).asJsonObject.getAsJsonArray("messages")
+                    }.getOrNull()?.lastOrNull()?.asJsonObject
+                    val readResult = lastMessage
+                        ?.takeIf { it.get("role").asString == "tool" }
+                        ?.let { runCatching { JsonParser.parseString(it.get("content").asString).asJsonObject }.getOrNull() }
+                        ?.takeIf { it.has("japanese_subtitles") }
+                    if (readResult != null) {
+                        val captions = readResult.getAsJsonArray("japanese_subtitles").joinToString(",") { element ->
+                            val source = element.asJsonObject
+                            """{"source_indices":[${source.get("index").asInt}],"start_ms":${source.get("start_ms").asLong},""" +
+                                """"end_ms":${source.get("end_ms").asLong},"japanese":"${source.get("japanese").asString}",""" +
+                                """"chinese":"中文${source.get("index").asInt}"}"""
+                        }
+                        toolCallResponse(
+                            "write-$windowSize",
+                            SUBTITLE_WRITE_TOOL_NAME,
+                            "写入。",
+                            """{"captions":[$captions]}"""
+                        )
+                    } else {
+                        toolCallResponse("read-${readTurn++}", SUBTITLE_READ_TOOL_NAME, "读取。", "{}")
+                    }
+                }
                 Response.Builder()
                     .request(chain.request())
                     .protocol(Protocol.HTTP_1_1)
                     .code(if (tooLarge) 413 else 200)
                     .message(if (tooLarge) "Payload Too Large" else "OK")
-                    .body(
-                        (if (tooLarge) {
-                            """{"error":{"message":"Request too large for model `openai/gpt-oss-20b`. TPM: Limit 8000, Requested $requested"}}"""
-                        } else {
-                            responses.removeFirst()
-                        }).toResponseBody("application/json".toMediaType())
-                    )
+                    .body(responseBody.toResponseBody("application/json".toMediaType()))
                     .build()
             }
             .build()
@@ -1162,11 +1177,125 @@ class SubtitleTranslationClientTest {
         )
 
         assertEquals(allSources.size, result.size)
-        // 必须降到 ≤4 才满足 8000 上限，证明「阶梯下限=1」生效；旧实现会卡在 window=8 直接失败。
-        assert(readWindowSizes.min() <= 4) {
+        // 智能跳窗后窗口 16（Requested 7080）即可塞进 8000 上限；旧实现卡在 window=8 直接失败。
+        assert(readWindowSizes.min() <= 16) {
             "最小读取窗口=${readWindowSizes.min()}，未降到 8000 token 上限以内（readWindowSizes=$readWindowSizes）"
         }
         // 且确实经历了 413 触发的降级（不是靠运气一次成功）。
         assert(readWindowSizes.size >= 2) { "未触发任何 413 降级" }
+    }
+
+    /**
+     * 模拟用户截图里的真实故障链路：自定义 AI 端点（限流严）首请求以 429 拒绝，
+     * 客户端内部重试（对应截图里「重试等待」的来源）退避后再次请求，
+     * 第二次返回正常 read→write 工具调用，用带括号振假名的真实 ASMR 字幕翻译成功。
+     */
+    @Test
+    fun translateSubtitles_recoversFromTransient429WithRealSubtitle() = runBlocking {
+        val gson = Gson()
+        val realSources = listOf(
+            GeneratedSubtitleSource(
+                0, 0L, 900L,
+                "のんびりと楽（たの）しくお話（はな）ししていきたいと思（おも）っております"
+            ),
+            GeneratedSubtitleSource(1, 1000L, 1900L, "結構（けっこう）頑張（がんば）ってますね"),
+            GeneratedSubtitleSource(2, 2000L, 2900L, "さあ、今日（きょう）も一緒（いっしょ）に聞（き）いていきましょう")
+        )
+        var requestCount = 0
+        val responses = ArrayDeque(
+            listOf(
+                toolCallResponse("read-1", SUBTITLE_READ_TOOL_NAME, "先读取字幕。", "{}"),
+                toolCallResponse(
+                    "write-1", SUBTITLE_WRITE_TOOL_NAME, "写入译文。",
+                    writeArgs(realSources, 0, realSources.size)
+                )
+            )
+        )
+        val httpClient = OkHttpClient.Builder()
+            .addInterceptor { chain ->
+                requestCount += 1
+                val (code, body) = if (requestCount == 1) {
+                    429 to """{"error":{"message":"Rate limit reached for model openai/gpt-oss-20b"}}"""
+                } else {
+                    200 to responses.removeFirst()
+                }
+                Response.Builder()
+                    .request(chain.request())
+                    .protocol(Protocol.HTTP_1_1)
+                    .code(code)
+                    .message(if (code == 429) "Too Many Requests" else "OK")
+                    .apply { if (code == 429) header("Retry-After", "1") }
+                    .body(body.toResponseBody("application/json".toMediaType()))
+                    .build()
+            }
+            .build()
+        val client = SubtitleTranslationClient(
+            okHttpClient = httpClient,
+            gson = gson,
+            apiKey = "test-key",
+            apiUrl = "https://example.test/chat"
+        )
+
+        val result = retrySubtitleTranslation(
+            maxAttempts = 4,
+            delayProvider = { /* 单元测试里跳过真实退避 */ }
+        ) {
+            client.translateSubtitles(
+                sources = realSources,
+                allowMerging = false,
+                onCaptionsConfirmed = {}
+            )
+        }
+
+        // 首请求 429 被内部重试消化，最终整条字幕翻译成功（429 重试 1 次 + read 1 次 + write 1 次）。
+        assertEquals(3, result.size)
+        assertEquals("中文0", result[0].chineseText)
+        assertEquals("中文2", result[2].chineseText)
+        assertEquals(3, requestCount)
+    }
+
+    /**
+     * 持续 429 时，异常必须带上 [SubtitleTranslationException.rateLimited] 与解析出的
+     * [SubtitleTranslationException.retryAfterMs]，供上层（SubtitleTaskService）走更长的退避。
+     * 这正是截图里那些「重试等待 2/4」任务需要的信号。
+     */
+    @Test
+    fun translateSubtitles_propagatesRateLimitedFlagOn429() = runBlocking {
+        val gson = Gson()
+        val httpClient = OkHttpClient.Builder()
+            .addInterceptor { chain ->
+                Response.Builder()
+                    .request(chain.request())
+                    .protocol(Protocol.HTTP_1_1)
+                    .code(429)
+                    .message("Too Many Requests")
+                    .header("Retry-After", "2")
+                    .body("""{"error":{"message":"Rate limit reached"}}""".toResponseBody("application/json".toMediaType()))
+                    .build()
+            }
+            .build()
+        val client = SubtitleTranslationClient(
+            okHttpClient = httpClient,
+            gson = gson,
+            apiKey = "test-key",
+            apiUrl = "https://example.test/chat"
+        )
+
+        var caught: SubtitleTranslationException? = null
+        try {
+            retrySubtitleTranslation(maxAttempts = 2, delayProvider = {}) { _ ->
+                client.translateSubtitles(
+                    sources = sources(1),
+                    allowMerging = false,
+                    onCaptionsConfirmed = {}
+                )
+            }
+        } catch (e: SubtitleTranslationException) {
+            caught = e
+        }
+
+        assertEquals(true, caught?.retryable)
+        assertEquals(true, caught?.rateLimited)
+        assertEquals(2_000L, caught?.retryAfterMs)
     }
 }

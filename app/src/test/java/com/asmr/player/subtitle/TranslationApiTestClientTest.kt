@@ -29,6 +29,37 @@ class TranslationApiTestClientTest {
     }
 
     @Test
+    fun apiKeyWithLineBreak_isSanitizedInsteadOfCrashing() = runBlocking {
+        // 真实闪退回归：用户粘贴的 Key 里带换行，OkHttp 拼 Authorization 头时抛
+        // IllegalArgumentException("Unexpected char 0x0a ...") 且未被捕获 → 进程崩溃。
+        val server = MockWebServer()
+        server.enqueue(MockResponse().setResponseCode(200).setBody("""{"choices":[{"message":{"content":"ok"}}]}"""))
+        server.start()
+        val outcome = runTranslationApiTest(
+            okHttpClient = OkHttpClient(),
+            gson = gson,
+            apiUrl = server.url("/v1/chat/completions").toString(),
+            apiKey = "sk-abc\ndef\r\nghi",
+            model = "mock-model"
+        )
+        server.shutdown()
+        assertEquals(TranslationApiTestOutcome.Success, outcome)
+    }
+
+    @Test
+    fun emptySanitizedKey_reportsFailureNotCrash() = runBlocking {
+        val outcome = runTranslationApiTest(
+            okHttpClient = OkHttpClient(),
+            gson = gson,
+            apiUrl = "https://example.test/v1/chat/completions",
+            apiKey = " \n\r ",
+            model = "mock-model"
+        )
+        assertTrue(outcome is TranslationApiTestOutcome.Failure)
+        assertTrue((outcome as TranslationApiTestOutcome.Failure).message.contains("API Key"))
+    }
+
+    @Test
     fun classify_200WithChoices_isSuccess() {
         val outcome = classifyTranslationApiTestResponse(
             200,

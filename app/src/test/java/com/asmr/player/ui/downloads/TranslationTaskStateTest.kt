@@ -25,7 +25,7 @@ class TranslationTaskStateTest {
     fun translatingStage_describesTheSingleFullRequest() {
         val mapped = item(SubtitleItemState.TRANSLATING).copy(translationCursor = 24).toTranslationTaskUi(task())
 
-        assertEquals("AI 正在确认字幕", mapped.stage)
+        assertEquals("AI 正在确认字幕 24/80", mapped.stage)
         assertEquals("已确认 24/80", mapped.progressLabel)
         assertEquals(0.3f, mapped.progress)
     }

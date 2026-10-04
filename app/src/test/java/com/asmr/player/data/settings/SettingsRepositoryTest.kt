@@ -323,8 +323,22 @@ class SettingsRepositoryTest {
 
     @Test
     fun customAiApiSettings_returnsDefaultsWhenUnset() = runBlocking {
-        assertEquals(CustomAiApiSettings(), repository.loadCustomAiApiSettings())
-        assertEquals(CustomAiApiSettings(), repository.customAiApiSettings.first())
+        // 未保存任何值时回退到默认预设（Groq）的内置端点与模型：
+        // 「选了预设就能直接用」，设置页输入框也因此能显示内置值而不是空白。
+        val preset = CUSTOM_AI_ENDPOINT_PRESETS.first { it.id == customAiDefaultPresetId() }
+        val expected = CustomAiApiSettings(apiUrl = preset.url, model = preset.defaultModel)
+        assertEquals(expected, repository.loadCustomAiApiSettings())
+        assertEquals(expected, repository.customAiApiSettings.first())
+    }
+
+    @Test
+    fun customAiApiSettings_selectedNonDefaultPresetFallsBackToItsOwnPresetDefaults() = runBlocking {
+        repository.selectCustomAiPreset("SiliconFlow")
+        val preset = CUSTOM_AI_ENDPOINT_PRESETS.first { it.id == "SiliconFlow" }
+        assertEquals(
+            CustomAiApiSettings(apiUrl = preset.url, model = preset.defaultModel),
+            repository.loadCustomAiApiSettings()
+        )
     }
 
     @Test
