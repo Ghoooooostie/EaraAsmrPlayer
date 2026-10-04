@@ -1409,7 +1409,12 @@ internal fun subtitleItemStage(item: SubtitleTaskItemUi): String = when (item.st
     SubtitleItemState.QUEUED_TRANSLATION -> "日文已生成，等待翻译"
     SubtitleItemState.WAITING_SLOT -> "等待翻译槽位"
     SubtitleItemState.WAITING_NETWORK -> "等待网络"
-    SubtitleItemState.TRANSLATING -> "AI 正在确认字幕"
+    SubtitleItemState.TRANSLATING ->
+        if (item.translationTotal > 0) {
+            "AI 正在确认字幕 ${item.translationCursor}/${item.translationTotal}"
+        } else {
+            "AI 正在确认字幕"
+        }
     SubtitleItemState.RETRY_WAIT -> "重试等待 ${item.attempt + 1}/4${item.errorMessage.asStageReason()}"
     SubtitleItemState.PAUSE_REQUESTED -> "暂停中"
     SubtitleItemState.PAUSED -> "已暂停"

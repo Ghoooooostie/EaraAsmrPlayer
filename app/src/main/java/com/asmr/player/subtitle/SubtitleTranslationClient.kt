@@ -3,6 +3,7 @@ package com.asmr.player.subtitle
 import android.util.Log
 import com.asmr.player.data.remote.NetworkHeaders
 import com.asmr.player.data.settings.DeepSeekTranslationSettings
+import com.asmr.player.data.settings.sanitizeApiKeyInput
 import com.google.gson.Gson
 import com.google.gson.JsonParser
 import com.google.gson.annotations.SerializedName
@@ -116,6 +117,8 @@ internal class SubtitleTranslationException(
     val payloadTooLarge: Boolean = false,
     /** 服务端以 429 拒绝：并发/速率受限，应遵医嘱退避（优先用 Retry-After）。 */
     val rateLimited: Boolean = false,
+    /** Groq 风格限速类型（TPD/TPH/TPM），非限速失败为 null。 */
+    val rateLimitKind: SubtitleRateLimitKind? = null,
     /** 413 响应体里解析出的「本次请求 token 数」（如 Groq 的 Requested 8010）。 */
     val requestedTokens: Int? = null,
     /** 413 响应体里解析出的「该端点/模型允许的最大 token 数」（如 Groq 的 Limit 8000）。 */
@@ -133,7 +136,7 @@ internal class SubtitleTranslationClient(
     private val sendDeepSeekParams: Boolean = true,
     private val onTokenUsage: (Long) -> Unit = {}
 ) {
-    private val normalizedApiKey = apiKey.trim().also {
+    private val normalizedApiKey = sanitizeApiKeyInput(apiKey).also {
         require(it.isNotEmpty()) { "请先在设置中配置 DeepSeek API Key" }
     }
     private val providerLabel = if (apiUrl == DEEPSEEK_CHAT_COMPLETIONS_URL) "DeepSeek" else "自定义 AI"
@@ -182,7 +185,11 @@ internal class SubtitleTranslationClient(
         var payloadLevel = 0
         var readWindowSize = SUBTITLE_READ_WINDOW_STEPS.first()
         var historyKeepBlocks = AGENT_HISTORY_KEEP_STEPS.first()
+        var agentTurn = 0
         while (confirmedSourceCount < sources.size) {
+            agentTurn += 1
+            val turnStartMs = android.os.SystemClock.elapsedRealtime()
+            var writtenThisTurn = 0
             messages = trimAgentHistory(messages, historyKeepBlocks).toMutableList()
             val response = try {
                 requestSubtitleAgentResponse(
@@ -191,15 +198,31 @@ internal class SubtitleTranslationClient(
                     scriptContext = scriptContext
                 )
             } catch (tooLarge: SubtitleTranslationException) {
-                if (!tooLarge.payloadTooLarge || payloadLevel >= MAX_PAYLOAD_DOWNGRADES) throw tooLarge
-                // 若端点返回了「允许上限 / 本次请求量」，按线性缩放直接跳到合适的窗口，
-                // 省去 64→32→16→8 这样一连串注定失败的 413 往返（Groq 免费档尤其慢）。
-                if (tooLarge.limitTokens != null && tooLarge.requestedTokens != null && tooLarge.requestedTokens > 0) {
-                    val targetWindow = (readWindowSize * tooLarge.limitTokens / tooLarge.requestedTokens).coerceAtLeast(1)
-                    val jumped = SUBTITLE_READ_WINDOW_STEPS.indexOfLast { it <= targetWindow }.coerceAtLeast(0)
-                    payloadLevel = payloadLevel.coerceAtLeast(jumped)
+                if (!tooLarge.payloadTooLarge || payloadLevel >= MAX_PAYLOAD_DOWNGRADES) {
+                    // TPM 413 在最小窗口下仍被拒绝：固定开销已超出该档位限额，物理塞不进去，
+                    // 转为不可重试的明确失败，避免外层再按可重试错误无意义地退避。
+                    if (tooLarge.rateLimitKind == SubtitleRateLimitKind.TPM) {
+                        throw SubtitleTranslationException(
+                            message = hopelessTpmMessage(providerLabel, tooLarge.limitTokens),
+                            retryable = false
+                        )
+                    }
+                    throw tooLarge
+                }
+                if (tooLarge.rateLimitKind == SubtitleRateLimitKind.TPM) {
+                    // TPM 限制作用于整个请求（系统提示词等固定开销占大头），
+                    // 逐级降窗没有意义，直接跳到最小窗口再试一次。
+                    payloadLevel = MAX_PAYLOAD_DOWNGRADES
                 } else {
-                    payloadLevel += 1
+                    // 若端点返回了「允许上限 / 本次请求量」，按线性缩放直接跳到合适的窗口，
+                    // 省去 64→32→16→8 这样一连串注定失败的 413 往返（Groq 免费档尤其慢）。
+                    if (tooLarge.limitTokens != null && tooLarge.requestedTokens != null && tooLarge.requestedTokens > 0) {
+                        val targetWindow = (readWindowSize * tooLarge.limitTokens / tooLarge.requestedTokens).coerceAtLeast(1)
+                        val jumped = SUBTITLE_READ_WINDOW_STEPS.indexOfLast { it <= targetWindow }.coerceAtLeast(0)
+                        payloadLevel = payloadLevel.coerceAtLeast(jumped)
+                    } else {
+                        payloadLevel += 1
+                    }
                 }
                 payloadLevel = payloadLevel.coerceAtMost(MAX_PAYLOAD_DOWNGRADES)
                 readWindowSize = SUBTITLE_READ_WINDOW_STEPS.getOrElse(payloadLevel) { SUBTITLE_READ_WINDOW_STEPS.last() }
@@ -262,6 +285,7 @@ internal class SubtitleTranslationClient(
                                     confirmed += captions
                                     val writtenSourceCount = captions.sumOf { it.sourceIndices.size }
                                     confirmedSourceCount += writtenSourceCount
+                                    writtenThisTurn += writtenSourceCount
                                     madeProgress = true
                                     buildSubtitleWriteToolResultMessage(
                                         gson = gson,
@@ -344,6 +368,15 @@ internal class SubtitleTranslationClient(
                     retryable = true
                 )
             }
+            // 每轮耗时/产出日志：翻译很慢时可直接从 logcat 看清是「模型一轮只写几条」
+            // 还是「单次请求体过大被降级」或「单请求耗时过长」。
+            Log.i(
+                TAG,
+                "翻译 agent 第 $agentTurn 轮：tools=${response.assistantMessage.toolCalls.orEmpty().map { it.function.name }}，" +
+                    "本轮写入 $writtenThisTurn 条，累计 $confirmedSourceCount/${sources.size}，" +
+                    "readWindow=$readWindowSize，请求体=${lastRequestBodyBytes / 1024}KB，" +
+                    "用时 ${(android.os.SystemClock.elapsedRealtime() - turnStartMs) / 1000}s"
+            )
         }
         return confirmed
     }
@@ -425,8 +458,22 @@ internal class SubtitleTranslationClient(
                     polishMode = true
                 )
             } catch (tooLarge: SubtitleTranslationException) {
-                if (!tooLarge.payloadTooLarge || payloadLevel >= MAX_PAYLOAD_DOWNGRADES) throw tooLarge
-                payloadLevel += 1
+                if (!tooLarge.payloadTooLarge || payloadLevel >= MAX_PAYLOAD_DOWNGRADES) {
+                    // 同翻译 agent：TPM 413 连最小请求都塞不下时，直接给出明确失败。
+                    if (tooLarge.rateLimitKind == SubtitleRateLimitKind.TPM) {
+                        throw SubtitleTranslationException(
+                            message = hopelessTpmMessage(providerLabel, tooLarge.limitTokens),
+                            retryable = false
+                        )
+                    }
+                    throw tooLarge
+                }
+                if (tooLarge.rateLimitKind == SubtitleRateLimitKind.TPM) {
+                    // TPM 作用于整个请求，直接跳到最小分页再试一次。
+                    payloadLevel = MAX_PAYLOAD_DOWNGRADES
+                } else {
+                    payloadLevel += 1
+                }
                 readPageSize = POLISH_READ_PAGE_STEPS.getOrElse(payloadLevel) { POLISH_READ_PAGE_STEPS.last() }
                 historyKeepBlocks = AGENT_HISTORY_KEEP_STEPS.getOrElse(payloadLevel) { AGENT_HISTORY_KEEP_STEPS.last() }
                 Log.w(
@@ -611,6 +658,14 @@ internal class SubtitleTranslationClient(
                         "翻译请求失败 status=${it.code} requestBytes=$requestBodyBytes " +
                             "model=$model url=$apiUrl resp=${raw.take(300)}"
                     )
+                    // Groq 把 TPM/TPD 限速也包装成 413/429 返回（如
+                    // "Request too large ... tokens per minute (TPM): Limit 800"）。
+                    // 这类失败与请求体大小无关，按限速处理：该退避的退避，
+                    // 配额耗尽/物理塞不进的直接给出可行动的失败原因，而不是
+                    // 把窗口从 64 一路降到 1 再失败。
+                    parseRateLimitError(raw, it.code)?.let { rateLimit ->
+                        throw rateLimit.toTranslationException(providerLabel = providerLabel)
+                    }
                     val failure = SubtitleFailureMessages.deepSeekHttp(
                         statusCode = it.code,
                         serviceMessage = parseDeepSeekErrorMessage(raw),
@@ -753,6 +808,84 @@ private fun parseTokenNumber(raw: String, label: String): Int? {
         ?.toIntOrNull()
 }
 
+/** Groq 风格限速类型：按 token 的时间窗口划分（服务端消息里的 TPD/TPH/TPM）。 */
+internal enum class SubtitleRateLimitKind { TPD, TPH, TPM }
+
+internal data class SubtitleRateLimitError(
+    val kind: SubtitleRateLimitKind,
+    /** 服务端给出的允许上限（如 Limit 800），解析不到为 null。 */
+    val limitTokens: Int?,
+    val statusCode: Int
+)
+
+/**
+ * 识别 Groq 风格的限速响应：
+ * - 413 "Request too large for model `x` ... on tokens per minute (TPM): Limit 800"
+ * - 429 "Rate limit reached for model `x` ... on tokens per day (TPD): Limit 20000"
+ *
+ * 注意：Groq 的 413 并不一定意味着请求体过大——TPM 低于请求 token 数时同样返回 413，
+ * 必须与真正的体积类 413 区分开，否则窗口降级再多次也无济于事。
+ */
+internal fun parseRateLimitError(raw: String, statusCode: Int): SubtitleRateLimitError? {
+    if (statusCode != 413 && statusCode != 429) return null
+    val kind = when {
+        raw.contains("tokens per day", ignoreCase = true) -> SubtitleRateLimitKind.TPD
+        raw.contains("tokens per hour", ignoreCase = true) -> SubtitleRateLimitKind.TPH
+        raw.contains("tokens per minute", ignoreCase = true) -> SubtitleRateLimitKind.TPM
+        else -> return null
+    }
+    return SubtitleRateLimitError(kind = kind, limitTokens = parseTokenNumber(raw, "Limit"), statusCode = statusCode)
+}
+
+/**
+ * 把限速响应转成对应的翻译异常：
+ * - TPD（每日配额）：不可重试，等待跨天才有意义，立即失败并说明；
+ * - TPH（每小时配额）：可重试，等 5 分钟；
+ * - TPM（每分钟限额）：视为可重试的瞬时限速（等 65 秒），同时标记 payloadTooLarge——
+ *   agent 循环会一步跳到最小窗口重试；若最小窗口仍被 413-TPM 拒绝（系统提示词等
+ *   固定开销已超出限额，物理塞不进去），循环会转成不可重试的明确失败。
+ */
+internal fun SubtitleRateLimitError.toTranslationException(
+    providerLabel: String
+): SubtitleTranslationException = when (kind) {
+    SubtitleRateLimitKind.TPD -> SubtitleTranslationException(
+        message = "$providerLabel 每日 token 配额已用尽" +
+            (limitTokens?.let { "（TPD $it）" } ?: "") +
+            "，一般在 UTC 0 点（北京时间早上 8 点）左右重置。可明天再试，" +
+            "或切换到其他模型/端点（如 DeepSeek 官方）。",
+        retryable = false,
+        rateLimitKind = kind,
+        limitTokens = limitTokens
+    )
+
+    SubtitleRateLimitKind.TPH -> SubtitleTranslationException(
+        message = "$providerLabel 触发每小时 token 限额" +
+            (limitTokens?.let { "（TPH $it）" } ?: "") + "，请稍后自动重试。",
+        retryable = true,
+        retryAfterMs = 5 * 60_000L,
+        rateLimitKind = kind,
+        limitTokens = limitTokens
+    )
+
+    SubtitleRateLimitKind.TPM -> SubtitleTranslationException(
+        message = "$providerLabel 触发每分钟 token 限额" +
+            (limitTokens?.let { "（TPM $it）" } ?: "") + "，请稍后自动重试。",
+        retryable = true,
+        retryAfterMs = 65_000L,
+        payloadTooLarge = true,
+        rateLimited = true,
+        rateLimitKind = kind,
+        limitTokens = limitTokens
+    )
+}
+
+/** TPM 413 在最小窗口下仍被拒绝时的最终失败信息：固定开销已超出限额，怎么缩都塞不进去。 */
+internal fun hopelessTpmMessage(providerLabel: String, limitTokens: Int?): String =
+    "$providerLabel 该模型当前档位的每分钟 token 上限过低" +
+        (limitTokens?.let { "（TPM $it）" } ?: "") +
+        "，连最小请求（系统提示词与工具定义的固定开销）都无法容纳，缩小字幕窗口也无法通过。" +
+        "请切换到限额更高的模型（如 Groq 的 openai/gpt-oss-120b），或改用 Gemini / DeepSeek 官方端点。"
+
 internal fun parseRetryAfterMillis(
     value: String?,
     nowMs: Long = System.currentTimeMillis()
@@ -794,12 +927,14 @@ private const val POLISH_READ_PAGE_SIZE = 40
 // 用更小的请求体继续翻译，而不是直接判定任务失败。
 // 窗口阶梯一路降到 1：Groq 的 gpt-oss-20b 等模型单请求输入上限只有几千 token，
 // 大到 8 条仍会 413，必须能继续缩到 4/2/1 才能塞进限制。
-private val SUBTITLE_READ_WINDOW_STEPS = listOf(64, 32, 16, 8, 4, 2, 1)
+// 首档 96：上下文充足的服务商（DeepSeek/硅基流动等）一轮多拿一些字幕，轮次直接减半；
+// 遇到小限额端点会按阶梯自动降回 64/32/16…，不会因此变慢或失败。
+private val SUBTITLE_READ_WINDOW_STEPS = listOf(96, 64, 32, 16, 8, 4, 2, 1)
 // 历史块下限保持 1（不能到 0）：否则刚读回的字幕会被裁掉，模型陷入反复 read 死循环。
-private val AGENT_HISTORY_KEEP_STEPS = listOf(4, 2, 1, 1, 1, 1, 1)
+private val AGENT_HISTORY_KEEP_STEPS = listOf(4, 2, 1, 1, 1, 1, 1, 1)
 private val POLISH_READ_PAGE_STEPS = listOf(POLISH_READ_PAGE_SIZE, 20, 10)
-// 与上面两个阶梯的长度（7）一致，保证 readWindow 能一路降到 1。
-internal const val MAX_PAYLOAD_DOWNGRADES = 6
+// 与上面两个阶梯的长度（8）一致，保证 readWindow 能一路降到 1。
+internal const val MAX_PAYLOAD_DOWNGRADES = 7
 // 请求体超过该阈值时打一条日志，便于在 logcat 里核对端点上限。
 private const val REQUEST_BODY_LOG_THRESHOLD_BYTES = 48 * 1024
 private const val SCRIPT_READ_DEFAULT_LIMIT = 4_000
@@ -1249,7 +1384,13 @@ internal fun buildSubtitleReadToolResultMessage(
         put("completed", nextSource == null)
         nextSource?.let {
             put("next_untranslated_index", it.index)
-            put("next_action", TranslationPrompts.subtitleProgressInstruction())
+            // 运行时补一句「一次写完整窗」：模型默认只写几条就把控制权交回，
+            // 导致每轮请求都要重发一次系统提示词（固定开销约 2~3k tokens），整轨翻译慢到不可接受。
+            put(
+                "next_action",
+                TranslationPrompts.subtitleProgressInstruction() +
+                    "（本窗共 ${windowEnd - windowStart} 条，请一次性全部翻译并用 write 工具写入）"
+            )
         }
     }
     return DeepSeekChatMessage(
@@ -1351,7 +1492,13 @@ internal fun buildSubtitleWriteToolResultMessage(
         put("completed", nextSource == null)
         nextSource?.let {
             put("next_untranslated_index", it.index)
-            put("next_action", TranslationPrompts.subtitleProgressInstruction())
+            // 同 read 结果：明确要求把剩余字幕一次性写完，减少请求轮数。
+            put(
+                "next_action",
+                TranslationPrompts.subtitleProgressInstruction() +
+                    "（剩余 ${sources.size - confirmedSourceCount} 条，请继续用 read + write 工具批量翻译，" +
+                    "每轮尽量写满窗口）"
+            )
         }
     }
     return DeepSeekChatMessage(
