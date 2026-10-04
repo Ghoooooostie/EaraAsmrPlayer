@@ -87,6 +87,7 @@ import com.asmr.player.BuildConfig
 import com.asmr.player.cache.AppCacheLimits
 import com.asmr.player.cache.AppCacheState
 import com.asmr.player.data.remote.download.DownloadDestination
+import com.asmr.player.data.settings.AppContentMode
 import com.asmr.player.data.settings.CoverPreviewMode
 import com.asmr.player.data.settings.CustomAiApiSettings
 import com.asmr.player.data.settings.DeepSeekReasoningEffort
@@ -207,6 +208,7 @@ fun SettingsScreen(
     val lyricsPageSettings by viewModel.lyricsPageSettings.collectAsStateWhileActive(lyricsDataActive)
     val dynamicPlayerHueEnabled by viewModel.dynamicPlayerHueEnabled.collectAsStateWhileActive(appearanceDataActive)
     val themeMode by viewModel.themeMode.collectAsStateWhileActive(appearanceDataActive)
+    val contentMode by viewModel.contentMode.collectAsStateWhileActive(appearanceDataActive)
     val staticHueArgbLight by viewModel.staticHueArgbLight.collectAsStateWhileActive(appearanceDataActive)
     val staticHueArgbDark by viewModel.staticHueArgbDark.collectAsStateWhileActive(appearanceDataActive)
     val coverBackgroundEnabled by viewModel.coverBackgroundEnabled.collectAsStateWhileActive(appearanceDataActive)
@@ -634,6 +636,20 @@ fun SettingsScreen(
                 if (currentSection == SettingsSection.Appearance) {
                     item(key = "group:appearance") {
                         SettingsDetailCard {
+                            Text("内容模式", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                                ThemeModeChip(
+                                    label = "ASMR",
+                                    selected = contentMode == AppContentMode.Asmr,
+                                    onClick = { viewModel.setContentMode(AppContentMode.Asmr) }
+                                )
+                                ThemeModeChip(
+                                    label = "播客",
+                                    selected = contentMode == AppContentMode.Podcast,
+                                    onClick = { viewModel.setContentMode(AppContentMode.Podcast) }
+                                )
+                            }
+
                             Text("主题模式", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
                             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
                                 ThemeModeChip(
@@ -1091,7 +1107,13 @@ fun SettingsScreen(
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             FilledTonalButton(
-                                onClick = viewModel::testTranslationApi,
+                                onClick = {
+                                    viewModel.testTranslationApi(
+                                        customUrlInput = customAiApiUrlInput,
+                                        customModelInput = customAiApiModelInput,
+                                        customKeyInput = customAiApiKeyInput
+                                    )
+                                },
                                 enabled = !translationApiTestState.running,
                                 modifier = Modifier
                                     .height(40.dp)
@@ -1138,7 +1160,12 @@ fun SettingsScreen(
                                     viewModel.saveCustomAiApiEndpoint(customAiApiUrlInput, customAiApiModelInput)
                                 },
                                 onSaveApiKey = { viewModel.saveCustomAiApiKey(customAiApiKeyInput) },
-                                onRefreshModels = viewModel::refreshCustomAiApiModels,
+                                onRefreshModels = {
+                                    viewModel.refreshCustomAiApiModels(
+                                        urlInput = customAiApiUrlInput,
+                                        keyInput = customAiApiKeyInput
+                                    )
+                                },
                                 onSendDeepSeekParamsChanged = viewModel::setCustomAiSendDeepSeekParams,
                                 onFinalPolishEnabledChanged = viewModel::setDeepSeekFinalPolishEnabled,
                                 activeTipKey = activeTipKey,
@@ -1577,12 +1604,12 @@ internal fun DeepSeekTranslationSettingsSection(
             value = apiKeyInput,
             onValueChange = onApiKeyInputChanged,
             modifier = inputModifier
-                .height(48.dp)
+                .heightIn(min = 56.dp)
                 .testTag("deepseek_api_key_input"),
             placeholder = {
                 Text(
                     text = "API Key（sk-…）",
-                    style = MaterialTheme.typography.bodySmall
+                    style = MaterialTheme.typography.bodyLarge
                 )
             },
             singleLine = true,
@@ -1675,6 +1702,25 @@ internal fun DeepSeekTranslationSettingsSection(
     )
 }
 
+/** 自定义 AI 端点快捷预设：OpenAI 兼容服务的常用入口。 */
+internal enum class CustomAiEndpointPreset(
+    val label: String,
+    val url: String,
+    val defaultModel: String
+) {
+    Groq(
+        label = "Groq",
+        url = "https://api.groq.com/openai/v1/chat/completions",
+        defaultModel = "llama-3.3-70b-versatile"
+    ),
+    GoogleGemini(
+        label = "Google Gemini",
+        url = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
+        // gemini-2.5-flash 已对部分账号下线，接口建议使用 gemini-3.8-flash
+        defaultModel = "gemini-3.8-flash"
+    )
+}
+
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 internal fun CustomAiApiSettingsSection(
@@ -1712,6 +1758,32 @@ internal fun CustomAiApiSettingsSection(
         style = MaterialTheme.typography.bodySmall,
         color = colorScheme.textSecondary
     )
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(6.dp)
+    ) {
+        Text(
+            text = "快捷预设",
+            style = MaterialTheme.typography.labelSmall,
+            color = colorScheme.textSecondary
+        )
+        FlowRow(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            CustomAiEndpointPreset.entries.forEach { preset ->
+                ThemeModeChip(
+                    label = preset.label,
+                    selected = urlInput.trim() == preset.url,
+                    onClick = {
+                        onUrlInputChanged(preset.url)
+                        if (modelInput.isBlank()) onModelInputChanged(preset.defaultModel)
+                    }
+                )
+            }
+        }
+    }
     Row(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -1721,12 +1793,12 @@ internal fun CustomAiApiSettingsSection(
             value = urlInput,
             onValueChange = onUrlInputChanged,
             modifier = inputWidthModifier()
-                .height(48.dp)
+                .heightIn(min = 56.dp)
                 .testTag("custom_ai_api_url_input"),
             placeholder = {
                 Text(
                     text = settings.apiUrl.ifBlank { "端点地址（…/chat/completions）" },
-                    style = MaterialTheme.typography.bodySmall
+                    style = MaterialTheme.typography.bodyLarge
                 )
             },
             singleLine = true,
@@ -1743,12 +1815,12 @@ internal fun CustomAiApiSettingsSection(
             value = modelInput,
             onValueChange = onModelInputChanged,
             modifier = inputWidthModifier()
-                .height(48.dp)
+                .heightIn(min = 56.dp)
                 .testTag("custom_ai_api_model_input"),
             placeholder = {
                 Text(
                     text = settings.model.ifBlank { "模型名（如 gpt-4o-mini）" },
-                    style = MaterialTheme.typography.bodySmall
+                    style = MaterialTheme.typography.bodyLarge
                 )
             },
             singleLine = true,
@@ -1840,12 +1912,12 @@ internal fun CustomAiApiSettingsSection(
             value = apiKeyInput,
             onValueChange = onApiKeyInputChanged,
             modifier = inputWidthModifier()
-                .height(48.dp)
+                .heightIn(min = 56.dp)
                 .testTag("custom_ai_api_key_input"),
             placeholder = {
                 Text(
                     text = "API Key",
-                    style = MaterialTheme.typography.bodySmall
+                    style = MaterialTheme.typography.bodyLarge
                 )
             },
             singleLine = true,

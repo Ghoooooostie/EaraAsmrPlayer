@@ -65,6 +65,10 @@ android {
         System.getenv("LISTEN_TOGETHER_BASE_URL")
             ?: (project.findProperty("LISTEN_TOGETHER_BASE_URL") as? String)
             ?: "https://earaasmr.com"
+    val podcastItunesBaseUrl =
+        System.getenv("PODCAST_ITUNES_BASE_URL")
+            ?: (project.findProperty("PODCAST_ITUNES_BASE_URL") as? String)
+            ?: "https://itunes.apple.com"
     val subtitleModelGitHubUrl =
         System.getenv("SUBTITLE_MODEL_GITHUB_URL")
             ?: (project.findProperty("SUBTITLE_MODEL_GITHUB_URL") as? String)
@@ -95,6 +99,7 @@ android {
         buildConfigField("String", "UPDATE_REPO_OWNER", "\"eValDoll\"")
         buildConfigField("String", "UPDATE_REPO_NAME", "\"EaraAsmrPlayer\"")
         buildConfigField("String", "LISTEN_TOGETHER_BASE_URL", "\"$listenTogetherBaseUrl\"")
+        buildConfigField("String", "PODCAST_ITUNES_BASE_URL", "\"$podcastItunesBaseUrl\"")
         buildConfigField("String", "SUBTITLE_MODEL_GITHUB_URL", "\"$subtitleModelGitHubUrl\"")
         buildConfigField("String", "SUBTITLE_MODEL_HUGGING_FACE_URL", "\"$subtitleModelHuggingFaceUrl\"")
         buildConfigField("String", "SUBTITLE_SENSEVOICE_GITHUB_URL", "\"$subtitleSenseVoiceGitHubUrl\"")
@@ -188,6 +193,7 @@ dependencies {
 
     // Media3 ExoPlayer
     implementation("androidx.media3:media3-exoplayer:$media3_version")
+    implementation("androidx.media3:media3-exoplayer-hls:$media3_version")
     implementation("androidx.media3:media3-session:$media3_version")
     implementation("androidx.media3:media3-ui:$media3_version")
     implementation("androidx.media3:media3-common:$media3_version")

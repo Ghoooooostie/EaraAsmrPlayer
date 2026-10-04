@@ -288,6 +288,9 @@ internal fun resolveCurrentPrimaryDestinationRoute(
         currentRoute == Routes.Library -> Routes.Library
         currentRoute == Routes.Search -> Routes.Search
         currentRoute == Routes.HotListening -> Routes.HotListening
+        currentRoute == Routes.PodcastDiscover -> Routes.PodcastDiscover
+        currentRoute == Routes.PodcastSearch -> Routes.PodcastSearch
+        currentRoute == Routes.PodcastSubscriptions -> Routes.PodcastSubscriptions
         currentRoute == "playlists" -> "playlists"
         currentRoute == "groups" -> "groups"
         currentRoute == "settings" -> "settings"

@@ -16,6 +16,7 @@ import com.asmr.player.data.remote.download.DownloadDirectoryChangeResult
 import com.asmr.player.data.remote.download.DownloadDirectoryCoordinator
 import com.asmr.player.data.remote.update.GitHubUpdateClient
 import com.asmr.player.data.remote.update.UpdateRelease
+import com.asmr.player.data.settings.AppContentMode
 import com.asmr.player.data.settings.CoverPreviewMode
 import com.asmr.player.data.settings.CustomAiApiSettings
 import com.asmr.player.data.settings.DeepSeekReasoningEffort
@@ -185,6 +186,9 @@ class SettingsViewModel @Inject constructor(
     val themeMode: StateFlow<String> = settingsDataStore.theme
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), "system")
 
+    val contentMode: StateFlow<AppContentMode> = settingsDataStore.contentMode
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), AppContentMode.Asmr)
+
     val staticHueArgb: StateFlow<Int?> = settingsDataStore.staticHueArgb
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
 
@@ -330,6 +334,10 @@ class SettingsViewModel @Inject constructor(
 
     fun setThemeMode(mode: String) {
         viewModelScope.launch { settingsDataStore.setTheme(mode) }
+    }
+
+    fun setContentMode(mode: AppContentMode) {
+        viewModelScope.launch { settingsDataStore.setContentMode(mode) }
     }
 
     fun setStaticHueArgb(argb: Int?) {
@@ -579,19 +587,20 @@ class SettingsViewModel @Inject constructor(
         }
     }
 
-    internal fun refreshCustomAiApiModels() {
+    internal fun refreshCustomAiApiModels(urlInput: String = "", keyInput: String = "") {
         viewModelScope.launch(Dispatchers.IO) {
             if (_customAiApiModelsState.value.loading) return@launch
             _customAiApiModelsState.value = CustomAiApiModelsUiState(loading = true)
-            val settings = settingsRepository.loadCustomAiApiSettings()
-            val modelsUrl = customAiModelsUrl(settings.apiUrl)
-            val apiKey = customAiApiKeyStore.read().trim()
+            val saved = settingsRepository.loadCustomAiApiSettings()
+            val apiUrl = urlInput.ifBlank { saved.apiUrl }
+            val apiKey = keyInput.ifBlank { customAiApiKeyStore.read() }.trim()
+            val modelsUrl = customAiModelsUrl(apiUrl)
             when {
                 modelsUrl == null -> _customAiApiModelsState.value = CustomAiApiModelsUiState(
-                    error = "请先保存有效的端点地址（需以 /chat/completions 结尾）"
+                    error = "请先填写有效的端点地址（需以 /chat/completions 结尾）"
                 )
                 apiKey.isEmpty() -> _customAiApiModelsState.value = CustomAiApiModelsUiState(
-                    error = "请先保存自定义 AI API Key"
+                    error = "请先保存或填写自定义 AI API Key"
                 )
                 else -> when (val outcome = fetchCustomAiApiModels(okHttpClient, modelsUrl, apiKey)) {
                     is CustomAiModelsOutcome.Loaded -> _customAiApiModelsState.value =
@@ -603,13 +612,24 @@ class SettingsViewModel @Inject constructor(
         }
     }
 
-    internal fun testTranslationApi() {
+    internal fun testTranslationApi(
+        customUrlInput: String = "",
+        customModelInput: String = "",
+        customKeyInput: String = ""
+    ) {
         viewModelScope.launch(Dispatchers.IO) {
             if (_translationApiTestState.value.running) return@launch
             _translationApiTestState.value = TranslationApiTestUiState(running = true)
+            val saved = settingsRepository.loadCustomAiApiSettings()
+            // 输入框有内容优先使用未保存的草稿，避免改了模型却仍用旧值测试
+            val effectiveCustom = saved.copy(
+                apiUrl = customUrlInput.ifBlank { saved.apiUrl },
+                model = customModelInput.ifBlank { saved.model }
+            )
+            val effectiveCustomKey = customKeyInput.ifBlank { customAiApiKeyStore.read() }
             val config = resolveTranslationApiTestConfig(
-                customSettings = settingsRepository.loadCustomAiApiSettings(),
-                customApiKey = customAiApiKeyStore.read(),
+                customSettings = effectiveCustom,
+                customApiKey = effectiveCustomKey,
                 deepSeekApiKey = deepSeekApiKeyStore.read()
             )
             val outcome = when (config) {

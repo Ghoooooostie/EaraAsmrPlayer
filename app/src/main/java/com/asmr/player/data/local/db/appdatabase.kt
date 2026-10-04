@@ -15,6 +15,7 @@ import com.asmr.player.data.local.db.dao.OnlineSavedResourceDao
 import com.asmr.player.data.local.db.dao.PlaylistDao
 import com.asmr.player.data.local.db.dao.PlaylistItemDao
 import com.asmr.player.data.local.db.dao.PlayStatDao
+import com.asmr.player.data.local.db.dao.PodcastSubscriptionDao
 import com.asmr.player.data.local.db.dao.TagDao
 import com.asmr.player.data.local.db.dao.TrackTagDao
 import com.asmr.player.data.local.db.dao.TrackDao
@@ -39,6 +40,7 @@ import com.asmr.player.data.local.db.entities.OnlineSavedResourceEntity
 import com.asmr.player.data.local.db.entities.PlaylistEntity
 import com.asmr.player.data.local.db.entities.PlaylistItemEntity
 import com.asmr.player.data.local.db.entities.PlaylistTrackCrossRef
+import com.asmr.player.data.local.db.entities.PodcastSubscriptionEntity
 import com.asmr.player.data.local.db.entities.SubtitleEntity
 import com.asmr.player.data.local.db.entities.SubtitleCommittedCaptionEntity
 import com.asmr.player.data.local.db.entities.SubtitleFallbackCaptionEntity
@@ -87,9 +89,10 @@ import com.asmr.player.data.local.db.entities.TrackPlaybackProgressEntity
         SubtitleTranslationSourceEntity::class,
         SubtitleFallbackCaptionEntity::class,
         SubtitleCommittedCaptionEntity::class,
-        SubtitleTitleOwnerEntity::class
+        SubtitleTitleOwnerEntity::class,
+        PodcastSubscriptionEntity::class
     ],
-    version = 31,
+    version = 32,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -114,6 +117,7 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun onlineSavedResourceDao(): OnlineSavedResourceDao
     abstract fun subtitleTaskDao(): SubtitleTaskDao
     abstract fun subtitleTitleOwnerDao(): SubtitleTitleOwnerDao
+    abstract fun podcastSubscriptionDao(): PodcastSubscriptionDao
 
     companion object {
         const val DATABASE_NAME = "asmr_player.db"

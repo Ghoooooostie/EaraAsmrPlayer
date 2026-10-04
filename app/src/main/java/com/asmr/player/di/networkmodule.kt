@@ -27,6 +27,7 @@ import com.asmr.player.subtitle.DEEPSEEK_TRANSLATION_CONCURRENCY
 import com.asmr.player.util.MessageManager
 import com.asmr.player.util.ASMR_ONE_SITE_FAILURE_MESSAGE
 import com.asmr.player.util.DlsiteAntiHotlink
+import com.asmr.player.util.OtomeKoeMedia
 import com.google.gson.Gson
 import java.io.IOException
 
@@ -97,6 +98,11 @@ object NetworkModule {
             } else if (host.contains("byteair.volces.com")) {
                 if (request.header("Referer") == null) {
                     builder.header("Referer", "https://www.dlsite.com/")
+                }
+            } else if (OtomeKoeMedia.isRefererRequiredHost(host)) {
+                // OtomeKoe 的音频流/封面/图片有防盗链，缺 Referer 会返回 403。
+                if (request.header("Referer") == null) {
+                    builder.header("Referer", NetworkHeaders.REFERER_OTOMEKOE)
                 }
             }
             
@@ -180,6 +186,8 @@ object NetworkModule {
             } else if (host.contains("asmr-100.com") || host.contains("asmr-200.com") || host.contains("asmr-300.com")) {
                 builder.header("Origin", "https://www.asmr.one")
                 builder.header("Referer", "https://www.asmr.one/")
+            } else if (OtomeKoeMedia.isRefererRequiredHost(host)) {
+                builder.header("Referer", NetworkHeaders.REFERER_OTOMEKOE)
             } else {
                 val dlsiteHeaders = DlsiteAntiHotlink.headersForImageUrl(request.url.toString())
                 dlsiteHeaders.forEach { (k, v) ->

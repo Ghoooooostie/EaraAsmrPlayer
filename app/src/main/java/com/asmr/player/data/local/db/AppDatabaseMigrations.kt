@@ -579,6 +579,23 @@ object AppDatabaseMigrations {
         }
     }
 
+    val MIGRATION_31_32: Migration = object : Migration(31, 32) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+            db.execSQL(
+                "CREATE TABLE IF NOT EXISTS `podcast_subscriptions` (" +
+                    "`feedUrl` TEXT NOT NULL, " +
+                    "`title` TEXT NOT NULL, " +
+                    "`author` TEXT NOT NULL, " +
+                    "`artworkUrl` TEXT NOT NULL, " +
+                    "`country` TEXT NOT NULL, " +
+                    "`genre` TEXT NOT NULL, " +
+                    "`itunesId` TEXT NOT NULL, " +
+                    "`subscribedAtMs` INTEGER NOT NULL, " +
+                    "PRIMARY KEY(`feedUrl`))"
+            )
+        }
+    }
+
     private fun createItemChildTable(
         db: SupportSQLiteDatabase,
         table: String,

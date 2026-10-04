@@ -148,6 +148,7 @@ import com.asmr.player.ui.player.MiniPlayerDisplayMode
 
 import com.asmr.player.data.local.datastore.SettingsDataStore
 import com.asmr.player.data.local.datastore.ThemeBootstrapPreferences
+import com.asmr.player.data.settings.AppContentMode
 import com.asmr.player.data.settings.CoverPreviewMode
 import com.asmr.player.data.settings.LyricsPageSettings
 import com.asmr.player.data.settings.NowPlayingHomeLayoutMode
@@ -587,6 +588,7 @@ class MainActivity : ComponentActivity() {
                         listeningTracker = listeningTracker,
                         recentAlbumsPanelExpandedInitial = recentAlbumsPanelExpandedInitial,
                         startRouteFromIntent = startRouteFromIntent,
+                        contentMode = AppContentMode.fromStorageValue(themeBootstrap.contentMode),
                         onShowQueue = { overlaySheet = OverlaySheet.Queue },
                         onShowSleepTimer = { overlaySheet = OverlaySheet.SleepTimer },
                         onContentReady = { contentReady = true },

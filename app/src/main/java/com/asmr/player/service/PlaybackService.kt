@@ -79,6 +79,7 @@ import com.asmr.player.playback.isRecoverableRemotePlaybackFailure
 import com.asmr.player.playback.capturePersistedPlaybackState
 import com.asmr.player.playback.spectrumVisualDelayMillis
 import com.asmr.player.util.EmbeddedMediaExtractor
+import com.asmr.player.util.OtomeKoeMedia
 import com.asmr.player.util.SubtitleBilingualOrder
 import com.asmr.player.util.SubtitleDisplayMode
 import com.asmr.player.util.SubtitleEntry
@@ -337,6 +338,12 @@ class PlaybackService : MediaSessionService() {
                     if (cookie.isNotBlank() && !headers.containsKey("Cookie")) {
                         headers["Cookie"] = cookie
                     }
+                    dataSpec.buildUpon().setHttpRequestHeaders(headers).build()
+                } else if (OtomeKoeMedia.isRefererRequiredHost(host)) {
+                    // OtomeKoe 的 HLS 音频流与封面有防盗链，需携带站点 Referer（分片请求同样生效）。
+                    val headers = LinkedHashMap(dataSpec.httpRequestHeaders)
+                    headers["User-Agent"] = DLSITE_UA
+                    headers["Referer"] = NetworkHeaders.REFERER_OTOMEKOE
                     dataSpec.buildUpon().setHttpRequestHeaders(headers).build()
                 } else {
                     dataSpec

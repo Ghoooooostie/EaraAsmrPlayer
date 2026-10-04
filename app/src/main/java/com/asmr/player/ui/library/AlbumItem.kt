@@ -39,7 +39,10 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.Download
 import androidx.compose.material3.Icon as MaterialIcon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -198,6 +201,7 @@ fun AlbumItem(
     coverOverlay: @Composable BoxScope.() -> Unit = {},
     showCollectedIndicator: Boolean = true,
     showStatsPlaceholders: Boolean = false,
+    onAlbumDownload: ((Album) -> Unit)? = null,
 ) {
     val colorScheme = AsmrTheme.colorScheme
     val coverShape = remember { RoundedCornerShape(AlbumListItemCornerRadius) }
@@ -326,6 +330,14 @@ fun AlbumItem(
                     AnimatedCollectedCoverRibbon(
                         visible = isCoverFadeComplete && showCollectedIndicator && album.hasAsmrOne,
                     )
+                    if (onAlbumDownload != null && !album.otomeKoeStreamUrl.isNullOrBlank()) {
+                        OtomeKoeDownloadButton(
+                            onClick = { onAlbumDownload.invoke(album) },
+                            modifier = Modifier
+                                .align(Alignment.TopEnd)
+                                .padding(4.dp)
+                        )
+                    }
                 }
             },
             content = {
@@ -508,6 +520,7 @@ fun AlbumGridItem(
     coverOverlay: @Composable BoxScope.() -> Unit = {},
     showCollectedIndicator: Boolean = true,
     showStatsPlaceholders: Boolean = false,
+    onAlbumDownload: ((Album) -> Unit)? = null,
 ) {
     val colorScheme = AsmrTheme.colorScheme
     val coverShape = remember { RoundedCornerShape(AlbumGridItemCornerRadius) }
@@ -585,6 +598,14 @@ fun AlbumGridItem(
             AnimatedCollectedCoverRibbon(
                 visible = isCoverFadeComplete && showCollectedIndicator && album.hasAsmrOne,
             )
+            if (onAlbumDownload != null && !album.otomeKoeStreamUrl.isNullOrBlank()) {
+                OtomeKoeDownloadButton(
+                    onClick = { onAlbumDownload.invoke(album) },
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(4.dp)
+                )
+            }
         }
         
         Column(
@@ -692,6 +713,30 @@ fun AlbumGridItem(
                 )
             }
         }
+    }
+}
+
+@Composable
+private fun OtomeKoeDownloadButton(
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val colorScheme = AsmrTheme.colorScheme
+    IconButton(
+        onClick = onClick,
+        modifier = modifier
+            .size(30.dp)
+            .background(
+                colorScheme.surface.copy(alpha = 0.72f),
+                RoundedCornerShape(50)
+            ),
+    ) {
+        MaterialIcon(
+            imageVector = Icons.Rounded.Download,
+            contentDescription = "下载 OtomeKoe 在线音频",
+            tint = colorScheme.primaryStrong,
+            modifier = Modifier.size(18.dp),
+        )
     }
 }
 

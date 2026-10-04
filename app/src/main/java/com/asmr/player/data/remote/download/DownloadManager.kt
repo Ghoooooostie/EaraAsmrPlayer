@@ -21,6 +21,7 @@ import com.asmr.player.data.local.db.AppDatabaseProvider
 import com.asmr.player.data.local.library.LocalAlbumMergeService
 import com.asmr.player.util.SubtitleEntry
 import com.asmr.player.util.DlsiteWorkNo
+import com.asmr.player.util.OtomeKoeMedia
 import com.asmr.player.util.SubtitleMatchSupport
 import com.asmr.player.util.SubtitleParser
 import com.asmr.player.util.TrackKeyNormalizer
@@ -871,6 +872,7 @@ class DownloadWorker(context: Context, parameters: WorkerParameters) : Coroutine
 
     private suspend fun executeDownloadWork(): ListenableWorker.Result {
         val url = inputData.getString("url") ?: return ListenableWorker.Result.failure()
+        val isHlsSource = HlsPlaylist.isPlaylistUrl(url)
         val fileName = inputData.getString("fileName") ?: return ListenableWorker.Result.failure()
         val targetDir = inputData.getString("targetDir") ?: return ListenableWorker.Result.failure()
         val taskKey = inputData.getString("taskKey").orEmpty()
@@ -1035,7 +1037,7 @@ class DownloadWorker(context: Context, parameters: WorkerParameters) : Coroutine
             } else {
                 baseClient
             }
-            if (existingBytes > 0L) {
+            if (existingBytes > 0L && !isHlsSource) {
                 requestBuilder.addHeader("Range", "bytes=$existingBytes-")
             }
 
@@ -1078,7 +1080,81 @@ class DownloadWorker(context: Context, parameters: WorkerParameters) : Coroutine
 
             val transferAlreadyComplete = transformAlreadyApplied ||
                 (hasDlsitePlayImageTransform && knownTotal > 0L && existingBytes >= knownTotal)
-            if (!transferAlreadyComplete) client.newCall(requestBuilder.build()).execute().use { response ->
+            if (isHlsSource) {
+                // HLS 没有 Range 续传语义：中断后整体重下，先标记为运行中再逐分片写入。
+                dao.upsertItem(
+                    currentItem.copy(
+                        taskId = taskId,
+                        workId = workId,
+                        targetDir = targetDir,
+                        state = WorkInfo.State.RUNNING.name,
+                        downloaded = 0L,
+                        total = -1L,
+                        speed = 0L,
+                        updatedAt = now0,
+                    )
+                )
+                var hlsDownloaded = 0L
+                var hlsStopped = false
+                var hlsProgressBytes = 0L
+                var hlsProgressTs = System.currentTimeMillis()
+                try {
+                    hlsDownloaded = HlsMediaDownloader(client).downloadTo(
+                        playlistUrl = url,
+                        referer = hlsRefererFor(url),
+                        outputFile = transferFile,
+                        shouldStop = { isStopped },
+                        onProgress = { totalBytes, deltaBytes ->
+                            pendingTrafficBytes += deltaBytes
+                            hlsDownloaded = totalBytes
+                            val now = System.currentTimeMillis()
+                            if (now - hlsProgressTs >= PROGRESS_UPDATE_INTERVAL_MS) {
+                                flushTrafficStats()
+                                val dt = (now - hlsProgressTs).coerceAtLeast(1)
+                                val speed = ((totalBytes - hlsProgressBytes) * 1000 / dt).coerceAtLeast(0)
+                                hlsProgressBytes = totalBytes
+                                hlsProgressTs = now
+                                dao.updateItemProgress(
+                                    workId = workId,
+                                    state = WorkInfo.State.RUNNING.name,
+                                    downloaded = totalBytes,
+                                    total = -1L,
+                                    speed = speed,
+                                    updatedAt = now
+                                )
+                            }
+                        }
+                    )
+                } catch (_: HlsTransferStoppedException) {
+                    hlsStopped = true
+                } catch (e: HlsDownloadException) {
+                    Log.w(TAG, "hls download failed: ${e.message}")
+                    return failCurrentDownload(downloadedBytes = 0L)
+                }
+                if (hlsStopped) {
+                    flushTrafficStats()
+                    dao.updateItemProgress(
+                        workId = workId,
+                        state = "PAUSED",
+                        downloaded = hlsDownloaded,
+                        total = -1L,
+                        speed = 0L,
+                        updatedAt = System.currentTimeMillis()
+                    )
+                    DownloadQueueCoordinator.requestSchedule(applicationContext)
+                    return ListenableWorker.Result.success(
+                        workDataOf(
+                            "fileName" to fileName,
+                            "targetDir" to targetDir,
+                            "filePath" to file.absolutePath,
+                            "relativePath" to relativePath,
+                            "taskKey" to resolvedTaskKey
+                        )
+                    )
+                }
+                downloaded = hlsDownloaded
+                total = hlsDownloaded
+            } else if (!transferAlreadyComplete) client.newCall(requestBuilder.build()).execute().use { response ->
                 if (!response.isSuccessful) {
                     Log.w(TAG, "download failed code=${response.code} url=${response.request.url}")
                     return failCurrentDownload(totalBytes = existingBytes.coerceAtLeast(0L))
@@ -1258,6 +1334,12 @@ class DownloadWorker(context: Context, parameters: WorkerParameters) : Coroutine
                 )
             )
         }
+    }
+
+    /** HLS 分片与播放列表常有防盗链，OtomeKoe 的媒体域名必须带站点 Referer。 */
+    private fun hlsRefererFor(url: String): String? {
+        val host = runCatching { url.toHttpUrl().host }.getOrNull() ?: return null
+        return if (OtomeKoeMedia.isRefererRequiredHost(host)) NetworkHeaders.REFERER_OTOMEKOE else null
     }
 
     companion object {

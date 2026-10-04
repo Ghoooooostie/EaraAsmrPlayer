@@ -3,6 +3,7 @@ package com.asmr.player.ui.search
 import androidx.annotation.DrawableRes
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.CalendarMonth
+import androidx.compose.material.icons.rounded.Language
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.ShoppingBag
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -39,6 +40,11 @@ enum class SearchFilterOption(
         icon = SearchFilterIcon.Vector(Icons.Rounded.CalendarMonth),
         mode = SearchFilterMode.PresaleOnly
     ),
+    OtomeKoe(
+        label = "OtomeKoe",
+        icon = SearchFilterIcon.Vector(Icons.Rounded.Language),
+        mode = SearchFilterMode.OtomeKoe
+    ),
     PurchasedOnly(
         label = "已购",
         icon = SearchFilterIcon.Vector(Icons.Rounded.ShoppingBag),
@@ -57,23 +63,30 @@ enum class SearchFilterOption(
     val isCollectedOnly: Boolean
         get() = mode == SearchFilterMode.CollectedOnly
 
+    val isOtomeKoeOnly: Boolean
+        get() = mode == SearchFilterMode.OtomeKoe
+
     val supportsWorkFilters: Boolean
         get() = mode == SearchFilterMode.CollectedOnly || mode == SearchFilterMode.Standard
 
     val supportsSortAndLanguageOptions: Boolean
-        get() = mode != SearchFilterMode.PurchasedOnly && mode != SearchFilterMode.PresaleOnly
+        get() = mode != SearchFilterMode.PurchasedOnly &&
+            mode != SearchFilterMode.PresaleOnly &&
+            mode != SearchFilterMode.OtomeKoe
 
     companion object {
         fun fromState(
             purchasedOnly: Boolean,
             presaleOnly: Boolean,
             chineseTranslatedOnly: Boolean,
-            collectedOnly: Boolean
+            collectedOnly: Boolean,
+            otomeKoeOnly: Boolean = false
         ): SearchFilterOption {
             return when {
                 purchasedOnly -> PurchasedOnly
                 chineseTranslatedOnly -> ChineseTranslated
                 presaleOnly -> Presale
+                otomeKoeOnly -> OtomeKoe
                 collectedOnly -> Collected
                 else -> Standard
             }
@@ -86,5 +99,6 @@ enum class SearchFilterMode {
     PurchasedOnly,
     PresaleOnly,
     ChineseTranslated,
+    OtomeKoe,
     CollectedOnly
 }

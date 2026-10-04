@@ -24,6 +24,7 @@ data class LastSearchStateV1(
     val presaleOnly: Boolean = false,
     val chineseTranslatedOnly: Boolean = false,
     val collectedOnly: Boolean = false,
+    val otomeKoeOnly: Boolean = false,
     val hasSubtitle: Boolean = false,
     val allAges: Boolean = false,
     val collectedSortName: String = "",

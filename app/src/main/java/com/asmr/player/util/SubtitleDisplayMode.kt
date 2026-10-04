@@ -37,6 +37,16 @@ enum class SubtitleBilingualOrder(val storageValue: String) {
 internal const val SUBTITLE_DISPLAY_MODE_PREF_KEY = "subtitle_display_mode"
 internal const val SUBTITLE_BILINGUAL_ORDER_PREF_KEY = "subtitle_bilingual_order"
 
+/** 一行字幕里的一段可独立处理的文本；[japanese] 为 true 才允许进注音词典。 */
+data class DisplaySegment(val text: String, val japanese: Boolean)
+
+/**
+ * 空分段（中文模式、外挂字幕、未走 withDisplayMode 的原始列表）时退回一个不注音的纯文本段。
+ * 所有渲染/测量点都必须经过它，否则这些模式下整行会画成空白。
+ */
+fun List<DisplaySegment>.orPlainFallback(plain: String): List<DisplaySegment> =
+    if (isNotEmpty()) this else listOf(DisplaySegment(plain, japanese = false))
+
 /** 按显示模式取单条字幕的展示文本。 */
 fun SubtitleEntry.displayText(
     mode: SubtitleDisplayMode,
@@ -57,11 +67,60 @@ fun SubtitleEntry.displayText(
     }
 }
 
-/** 把整轨字幕的展示文本替换为指定模式下的文本，时间轴与顺序保持不变。 */
+/**
+ * 按显示模式与双语顺序把单条字幕拆成带语言标记的分段。
+ * 与 [displayText] 必须逐字等价：分段按顺序拼接（\n 连接）就是该模式的展示文本。
+ */
+fun SubtitleEntry.displaySegmentsFor(
+    mode: SubtitleDisplayMode,
+    order: SubtitleBilingualOrder
+): List<DisplaySegment> {
+    val chinese = text.trim()
+    val japanese = japaneseText.trim()
+    val bilingual = listOf(
+        DisplaySegment(chinese, japanese = false),
+        DisplaySegment(japanese, japanese = true)
+    )
+    return when (mode) {
+        SubtitleDisplayMode.CHINESE -> emptyList()
+        SubtitleDisplayMode.JAPANESE -> when {
+            japanese.isBlank() -> listOf(DisplaySegment(chinese, japanese = false))
+            else -> listOf(DisplaySegment(japanese, japanese = true))
+        }
+        SubtitleDisplayMode.BILINGUAL -> when {
+            japanese.isBlank() -> listOf(DisplaySegment(chinese, japanese = false))
+            chinese.isBlank() -> listOf(DisplaySegment(japanese, japanese = true))
+            japanese == chinese -> listOf(DisplaySegment(chinese, japanese = false))
+            else -> if (order == SubtitleBilingualOrder.JAPANESE_FIRST) bilingual.reversed() else bilingual
+        }
+    }
+}
+
+/** 把整轨字幕的展示文本替换为指定模式与顺序下的文本，并填好语言分段供注音使用；时间轴与顺序保持不变。 */
 fun List<SubtitleEntry>.withDisplayMode(
     mode: SubtitleDisplayMode,
-    bilingualOrder: SubtitleBilingualOrder
+    order: SubtitleBilingualOrder
 ): List<SubtitleEntry> {
-    if (mode == SubtitleDisplayMode.CHINESE || isEmpty()) return this
-    return map { entry -> entry.copy(text = entry.displayText(mode, bilingualOrder)) }
+    if (isEmpty()) return this
+    if (mode == SubtitleDisplayMode.CHINESE) {
+        // 中文模式不需要分段，但也不能残留上一次模式的分段。
+        return map { if (it.displaySegments.isEmpty()) it else it.copy(displaySegments = emptyList()) }
+    }
+    return map { entry ->
+        val segments = entry.displaySegmentsFor(mode, order)
+        entry.copy(text = segments.joinToString("\n") { it.text }, displaySegments = segments)
+    }
+}
+
+/**
+ * 注音渲染所需的全部输入。[source] 为 null 或词典未就绪时等价于不注音。
+ * 打包成一个值对象是为了避免把「开关 + 词典」逐层透传到五个渲染点。
+ */
+data class FuriganaSpec(
+    val enabled: Boolean,
+    val source: ReadingSource?
+) {
+    companion object {
+        val NONE = FuriganaSpec(enabled = false, source = null)
+    }
 }

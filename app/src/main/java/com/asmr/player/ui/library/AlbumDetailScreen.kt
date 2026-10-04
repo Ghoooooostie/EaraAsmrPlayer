@@ -1444,7 +1444,10 @@ fun AlbumDetailScreen(
                                         },
                                         dlsiteRecommendations = model.dlsiteRecommendations,
                                         onOpenAlbumByRj = onOpenAlbumByRj,
-                                        loadRemoteFileSize = { viewModel.loadRemoteFileSize(it) }
+                                        loadRemoteFileSize = { viewModel.loadRemoteFileSize(it) },
+                                        otomeKoeStreamUrl = model.otomeKoeStreamUrl,
+                                        isLoadingOtomeKoe = model.isLoadingOtomeKoe,
+                                        onDownloadOtomeKoe = { viewModel.downloadOtomeKoeAudio() }
                                     )
                                     else -> AlbumDlsitePlayBreadcrumbTabV2(
                                         header = { listHeaderContent(2) },

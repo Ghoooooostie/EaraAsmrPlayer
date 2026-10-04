@@ -29,6 +29,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.QueueMusic
 import androidx.compose.material.icons.rounded.Download
+import androidx.compose.material.icons.rounded.Explore
 import androidx.compose.material.icons.rounded.Favorite
 import androidx.compose.material.icons.rounded.Folder
 import androidx.compose.material.icons.rounded.Home
@@ -36,6 +37,7 @@ import androidx.compose.material.icons.rounded.MoreHoriz
 import androidx.compose.material.icons.rounded.Route
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.Settings
+import androidx.compose.material.icons.rounded.Subscriptions
 import androidx.compose.material.icons.rounded.SwapHoriz
 import androidx.compose.material.icons.rounded.Whatshot
 import androidx.compose.material3.Icon
@@ -77,6 +79,7 @@ import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
+import com.asmr.player.data.settings.AppContentMode
 import com.asmr.player.ui.common.consumeTapThrough
 import com.asmr.player.ui.player.MiniPlayer
 import com.asmr.player.ui.player.MiniPlayerDisplayMode
@@ -304,16 +307,29 @@ private fun bottomChromeMetrics(largeLayout: Boolean): BottomChromeMetrics =
         )
     }
 
-fun bottomChromeNavItems(): List<BottomChromeNavItem> = listOf(
-    BottomChromeNavItem(Icons.Rounded.Home, "本地库", Routes.Library),
-    BottomChromeNavItem(Icons.Rounded.Search, "在线搜索", Routes.Search),
-    BottomChromeNavItem(Icons.Rounded.Whatshot, "热门收听", Routes.HotListening),
-    BottomChromeNavItem(Icons.Rounded.Favorite, "我的收藏", "playlist_system/favorites"),
-    BottomChromeNavItem(Icons.AutoMirrored.Rounded.QueueMusic, "我的列表", "playlists"),
-    BottomChromeNavItem(Icons.Rounded.Folder, "我的分组", "groups"),
-    BottomChromeNavItem(Icons.Rounded.Route, "ASMR 看板", "listening_calendar"),
-    BottomChromeNavItem(Icons.Rounded.Settings, "设置", "settings")
-)
+fun bottomChromeNavItems(contentMode: AppContentMode = AppContentMode.Asmr): List<BottomChromeNavItem> {
+    return when (contentMode) {
+        AppContentMode.Podcast -> listOf(
+            BottomChromeNavItem(Icons.Rounded.Explore, "播客发现", Routes.PodcastDiscover),
+            BottomChromeNavItem(Icons.Rounded.Search, "播客搜索", Routes.PodcastSearch),
+            BottomChromeNavItem(Icons.Rounded.Subscriptions, "我的订阅", Routes.PodcastSubscriptions),
+            BottomChromeNavItem(Icons.Rounded.Favorite, "我的收藏", "playlist_system/favorites"),
+            BottomChromeNavItem(Icons.AutoMirrored.Rounded.QueueMusic, "我的列表", "playlists"),
+            BottomChromeNavItem(Icons.Rounded.Route, "收听看板", "listening_calendar"),
+            BottomChromeNavItem(Icons.Rounded.Settings, "设置", "settings")
+        )
+        AppContentMode.Asmr -> listOf(
+            BottomChromeNavItem(Icons.Rounded.Home, "本地库", Routes.Library),
+            BottomChromeNavItem(Icons.Rounded.Search, "在线搜索", Routes.Search),
+            BottomChromeNavItem(Icons.Rounded.Whatshot, "热门收听", Routes.HotListening),
+            BottomChromeNavItem(Icons.Rounded.Favorite, "我的收藏", "playlist_system/favorites"),
+            BottomChromeNavItem(Icons.AutoMirrored.Rounded.QueueMusic, "我的列表", "playlists"),
+            BottomChromeNavItem(Icons.Rounded.Folder, "我的分组", "groups"),
+            BottomChromeNavItem(Icons.Rounded.Route, "ASMR 看板", "listening_calendar"),
+            BottomChromeNavItem(Icons.Rounded.Settings, "设置", "settings")
+        )
+    }
+}
 
 fun isPrimaryRoute(route: String?): Boolean {
     if (route.isNullOrBlank()) return false
@@ -321,6 +337,9 @@ fun isPrimaryRoute(route: String?): Boolean {
         Routes.Library,
         Routes.Search,
         Routes.HotListening,
+        Routes.PodcastDiscover,
+        Routes.PodcastSearch,
+        Routes.PodcastSubscriptions,
         "playlist_system/favorites",
         "playlists",
         "groups",
@@ -340,6 +359,10 @@ fun resolvePrimaryRoute(
         currentRoute == Routes.SearchAssist -> Routes.Search
         currentRoute == Routes.SearchAssistPattern -> Routes.Search
         currentRoute == Routes.HotListening -> Routes.HotListening
+        currentRoute == Routes.PodcastDiscover -> Routes.PodcastDiscover
+        currentRoute == Routes.PodcastSearch -> Routes.PodcastSearch
+        currentRoute == Routes.PodcastSubscriptions -> Routes.PodcastSubscriptions
+        currentRoute == Routes.PodcastDetail -> lastPrimaryRoute ?: Routes.Library
         currentRoute == "playlists" -> "playlists"
         currentRoute == "groups" -> "groups"
         currentRoute == "settings" -> "settings"

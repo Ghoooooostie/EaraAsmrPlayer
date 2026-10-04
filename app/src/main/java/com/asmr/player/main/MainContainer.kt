@@ -128,6 +128,7 @@ import com.asmr.player.ui.search.SearchAssistSearchRequest
 import com.asmr.player.ui.search.SearchAssistScreen
 import com.asmr.player.ui.search.SearchScreen
 import com.asmr.player.ui.search.SearchViewModel
+import com.asmr.player.domain.model.PodcastFeed
 import com.asmr.player.domain.model.SearchSource
 import com.asmr.player.ui.settings.AppUpdateState
 import com.asmr.player.ui.settings.SettingsScreen
@@ -155,6 +156,15 @@ import com.asmr.player.ui.nav.bottomChromeNavItems
 import com.asmr.player.ui.nav.bottomChromeOverlayHeight
 import com.asmr.player.ui.nav.isPrimaryRoute
 import com.asmr.player.ui.nav.resolvePrimaryRoute
+import com.asmr.player.ui.podcast.PodcastDiscoverScreen
+import com.asmr.player.ui.podcast.PodcastDiscoverViewModel
+import com.asmr.player.ui.podcast.PodcastNavPayload
+import com.asmr.player.ui.podcast.PodcastSearchScreen
+import com.asmr.player.ui.podcast.PodcastSearchViewModel
+import com.asmr.player.ui.podcast.PodcastSubscriptionsScreen
+import com.asmr.player.ui.podcast.PodcastSubscriptionsViewModel
+import com.asmr.player.ui.podcast.PodcastDetailScreen
+import com.asmr.player.ui.podcast.PodcastDetailViewModel
 import com.asmr.player.ui.common.LocalBottomOverlayPadding
 import com.asmr.player.ui.common.rememberCalmScrollableFlingBehavior
 import com.asmr.player.ui.splash.EaraSplashOverlay
@@ -206,6 +216,7 @@ import com.asmr.player.ui.player.SleepTimerSheetContent
 import com.asmr.player.ui.player.MiniPlayerDisplayMode
 
 import com.asmr.player.data.local.datastore.SettingsDataStore
+import com.asmr.player.data.settings.AppContentMode
 import com.asmr.player.data.settings.CoverPreviewMode
 import com.asmr.player.data.settings.LyricsPageSettings
 import com.asmr.player.data.settings.NowPlayingHomeLayoutMode
@@ -821,6 +832,7 @@ fun MainContainer(
     listeningTracker: ListeningTracker,
     recentAlbumsPanelExpandedInitial: Boolean,
     startRouteFromIntent: String?,
+    contentMode: AppContentMode,
     onShowQueue: () -> Unit,
     onShowSleepTimer: () -> Unit,
     onContentReady: () -> Unit,
@@ -877,8 +889,12 @@ fun MainContainer(
     val startRoute = remember(startRouteFromIntent) {
         startRouteFromIntent?.trim().orEmpty()
     }
-    val initialDestination = remember(startRoute) {
-        if (startRoute == Routes.Search) Routes.Search else Routes.Library
+    val initialDestination = remember(startRoute, contentMode) {
+        when {
+            startRoute == Routes.Search -> Routes.Search
+            contentMode == AppContentMode.Podcast -> Routes.PodcastDiscover
+            else -> Routes.Library
+        }
     }
     var lastPrimaryRoute by rememberSaveable { mutableStateOf(initialDestination) }
     val currentPrimaryRoute = resolveCurrentPrimaryDestinationRoute(
@@ -899,7 +915,7 @@ fun MainContainer(
             albumDetailPageOffsetReader = null
         }
     }
-    val bottomNavItems = remember { bottomChromeNavItems() }
+    val bottomNavItems = remember(contentMode) { bottomChromeNavItems(contentMode) }
     val storedMiniPlayerDisplayMode by settingsDataStore.miniPlayerDisplayMode.collectAsStateWithLifecycle(
         initialValue = MiniPlayerDisplayMode.CoverOnly.name
     )
@@ -1029,6 +1045,9 @@ fun MainContainer(
     var settingsScrollToTopSignal by remember { mutableLongStateOf(0L) }
     var settingsDetailPageVisible by rememberSaveable { mutableStateOf(false) }
     var hotListeningScrollToTopSignal by remember { mutableLongStateOf(0L) }
+    var podcastDiscoverScrollToTopSignal by remember { mutableLongStateOf(0L) }
+    var podcastSearchScrollToTopSignal by remember { mutableLongStateOf(0L) }
+    var podcastSubscriptionsScrollToTopSignal by remember { mutableLongStateOf(0L) }
     val appVolumeWarningSessionState = rememberAppVolumeWarningSessionState()
     val audioOutputRouteKind = rememberCurrentAudioOutputRouteKind()
     
@@ -1223,16 +1242,40 @@ fun MainContainer(
         }
     }
 
+    // 内容模式切换(ASMR/播客)时,当前路由与 Pager 页面整体切换到新模式的主页。
+    var contentModeInitialized by remember { mutableStateOf(false) }
+    LaunchedEffect(contentMode) {
+        if (!contentModeInitialized) {
+            contentModeInitialized = true
+            return@LaunchedEffect
+        }
+        val homeRoute = if (contentMode == AppContentMode.Podcast) {
+            Routes.PodcastDiscover
+        } else {
+            Routes.Library
+        }
+        lastPrimaryRoute = homeRoute
+        openPrimaryRoute(homeRoute)
+    }
+
     fun triggerPrimaryRouteScrollToTop(route: String) {
         when (route) {
             Routes.Library -> libraryScrollToTopSignal += 1L
             Routes.Search -> searchScrollToTopSignal += 1L
             Routes.HotListening -> hotListeningScrollToTopSignal += 1L
+            Routes.PodcastDiscover -> podcastDiscoverScrollToTopSignal += 1L
+            Routes.PodcastSearch -> podcastSearchScrollToTopSignal += 1L
+            Routes.PodcastSubscriptions -> podcastSubscriptionsScrollToTopSignal += 1L
             "playlist_system/favorites" -> favoritesScrollToTopSignal += 1L
             "playlists" -> playlistsScrollToTopSignal += 1L
             "groups" -> groupsScrollToTopSignal += 1L
             "settings" -> settingsScrollToTopSignal += 1L
         }
+    }
+
+    fun openPodcastDetail(feed: PodcastFeed) {
+        PodcastNavPayload.set(feed)
+        navController.navigateSingleTop(Routes.PodcastDetail)
     }
 
     fun openAlbumDetailFromSearch(albumId: Long?, rj: String?, preferDlsitePlay: Boolean = false) {
@@ -1643,16 +1686,14 @@ fun MainContainer(
                     drawerContentColor = colorScheme.onSurface,
                     modifier = Modifier.fillMaxSize()
                 ) {
-                    val navItems = listOf(
-                        Triple(Icons.Rounded.Home, "本地库", "library"),
-                        Triple(Icons.Rounded.Search, "在线搜索", "search"),
-                        Triple(Icons.Rounded.Favorite, "我的收藏", "playlist_system/favorites"),
-                        Triple(Icons.AutoMirrored.Rounded.QueueMusic, "我的列表", "playlists"),
-                        Triple(Icons.Rounded.Folder, "我的分组", "groups"),
-                        Triple(Icons.Rounded.Sync, "任务管理", "downloads"),
-                        Triple(Icons.Rounded.Route, "ASMR 看板", "listening_calendar"),
-                        Triple(Icons.Rounded.Settings, "设置", "settings")
-                    )
+                    // 抽屉项跟随内容模式:底部导航项 + 任务管理(设置保持最后)。
+                    val navItems = remember(bottomNavItems) {
+                        buildList {
+                            bottomNavItems.dropLast(1).forEach { add(Triple(it.icon, it.label, it.route)) }
+                            add(Triple(Icons.Rounded.Sync, "任务管理", "downloads"))
+                            bottomNavItems.takeLast(1).forEach { add(Triple(it.icon, it.label, it.route)) }
+                        }
+                    }
 
                     Column(modifier = Modifier.fillMaxSize()) {
                         Spacer(modifier = Modifier.height(8.dp))
@@ -1846,6 +1887,10 @@ fun MainContainer(
                                                     resolvedTitleRoute == Routes.SearchAssist -> "在线搜索"
                                                     resolvedTitleRoute == Routes.SearchAssistPattern -> "在线搜索"
                                                     resolvedTitleRoute == Routes.HotListening -> "热门收听"
+                                                    resolvedTitleRoute == Routes.PodcastDiscover -> "播客发现"
+                                                    resolvedTitleRoute == Routes.PodcastSearch -> "播客搜索"
+                                                    resolvedTitleRoute == Routes.PodcastSubscriptions -> "我的订阅"
+                                                    resolvedTitleRoute == Routes.PodcastDetail -> "播客详情"
                                                     resolvedTitleRoute == "playlists" -> "我的列表"
                                                     resolvedTitleRoute == "playlist/{playlistId}/{playlistName}" ->
                                                         playlistName.ifBlank { "我的列表" }
@@ -1946,6 +1991,25 @@ fun MainContainer(
                                                             }
                                                         }
                                                         val activeTaskCount = activeDownloadCount + activeSubtitleTaskCount
+                                                        // 内容模式快切按钮:播客 / ASMR
+                                                        val isPodcastMode = contentMode == AppContentMode.Podcast
+                                                        EaraTopBarIconButton(
+                                                            onClick = {
+                                                                settingsViewModel.setContentMode(
+                                                                    if (isPodcastMode) AppContentMode.Asmr else AppContentMode.Podcast
+                                                                )
+                                                            },
+                                                            modifier = Modifier.padding(end = 4.dp)
+                                                        ) {
+                                                            Icon(
+                                                                imageVector = if (isPodcastMode) {
+                                                                    Icons.Rounded.Podcasts
+                                                                } else {
+                                                                    Icons.Rounded.Headphones
+                                                                },
+                                                                contentDescription = if (isPodcastMode) "切换到 ASMR 模式" else "切换到播客模式"
+                                                            )
+                                                        }
                                                         PageTranslationHeaderAction(headerActionRoute, Modifier.padding(end = 4.dp))
                                                         Box {
                                                             EaraTopBarIconButton(
@@ -2132,9 +2196,11 @@ fun MainContainer(
                                     beyondViewportPageCount = primaryPagerBeyondBoundsPageCount,
                                     flingBehavior = primaryPagerFlingBehavior,
                                     userScrollEnabled = !primaryPagerScrollLocked && !hasOverlayRoute,
-                                    key = { primaryPagerRoutes[it] }
+                                    // 内容模式切换会让主路由表在 8/7 页之间收缩，而 Pager 仍会按上一帧
+                                    // 的测量结果查询越界下标，这里必须容忍空洞否则直接 IndexOutOfBounds。
+                                    key = { index -> primaryPagerRoutes.getOrNull(index) ?: "primary-pager-$index" }
                                 ) { page ->
-                                    val route = primaryPagerRoutes[page]
+                                    val route = primaryPagerRoutes.getOrNull(page) ?: return@HorizontalPager
                                     val primaryRouteActive = visualPrimaryRoute == route
                                     val pagerRouteVisible = primaryPagerState.currentPage == page ||
                                         (
@@ -2377,6 +2443,51 @@ fun MainContainer(
                                             )
                                         }
 
+                                        Routes.PodcastDiscover -> {
+                                            val podcastDiscoverViewModel: PodcastDiscoverViewModel =
+                                                hiltViewModel(activityViewModelStoreOwner)
+                                            PodcastDiscoverScreen(
+                                                windowSizeClass = windowSizeClass,
+                                                isActive = primaryRouteActive,
+                                                isDataActive = primaryRouteDataActive,
+                                                scrollToTopSignal = podcastDiscoverScrollToTopSignal,
+                                                onOpenPodcast = ::openPodcastDetail,
+                                                viewModel = podcastDiscoverViewModel
+                                            )
+                                        }
+
+                                        Routes.PodcastSearch -> {
+                                            val podcastSearchViewModel: PodcastSearchViewModel =
+                                                hiltViewModel(activityViewModelStoreOwner)
+                                            PodcastSearchScreen(
+                                                windowSizeClass = windowSizeClass,
+                                                isActive = primaryRouteActive,
+                                                isDataActive = primaryRouteDataActive,
+                                                scrollToTopSignal = podcastSearchScrollToTopSignal,
+                                                onHorizontalPagerScrollLockChanged = { active ->
+                                                    primaryPagerScrollLocked = active
+                                                },
+                                                onOpenPodcast = ::openPodcastDetail,
+                                                viewModel = podcastSearchViewModel
+                                            )
+                                        }
+
+                                        Routes.PodcastSubscriptions -> {
+                                            val podcastSubscriptionsViewModel: PodcastSubscriptionsViewModel =
+                                                hiltViewModel(activityViewModelStoreOwner)
+                                            PodcastSubscriptionsScreen(
+                                                windowSizeClass = windowSizeClass,
+                                                isActive = primaryRouteActive,
+                                                isDataActive = primaryRouteDataActive,
+                                                scrollToTopSignal = podcastSubscriptionsScrollToTopSignal,
+                                                onOpenPodcast = ::openPodcastDetail,
+                                                onOpenDownloadedAlbum = { albumId ->
+                                                    navigator.openAlbumDetail(albumId = albumId, rj = null)
+                                                },
+                                                viewModel = podcastSubscriptionsViewModel
+                                            )
+                                        }
+
                                         }
                                     }
                                 }
@@ -2420,6 +2531,40 @@ fun MainContainer(
 
                 composable("library") {
                     Box(modifier = Modifier.fillMaxSize())
+                }
+                composable(Routes.PodcastDiscover) {
+                    Box(modifier = Modifier.fillMaxSize())
+                }
+                composable(Routes.PodcastSearch) {
+                    Box(modifier = Modifier.fillMaxSize())
+                }
+                composable(Routes.PodcastSubscriptions) {
+                    Box(modifier = Modifier.fillMaxSize())
+                }
+                composable(Routes.PodcastDetail) {
+                    SecondaryPageBackground(topPadding = secondaryPageTopPadding) {
+                        val podcastDetailViewModel: PodcastDetailViewModel = hiltViewModel()
+                        PodcastDetailScreen(
+                            windowSizeClass = windowSizeClass,
+                            onBack = { navController.popBackStack() },
+                            onPlayEpisodes = { feed, episodes, startIndex ->
+                                scope.launch {
+                                    if (playerViewModel.playPodcastEpisodes(feed, episodes, startIndex)) {
+                                        requestMiniPlayerPlayFeedback()
+                                    }
+                                }
+                            },
+                            onAddToPlaylist = { episode ->
+                                val feed = PodcastNavPayload.peek()
+                                if (feed != null) {
+                                    albumBatchPlaylistPickerRequest = BatchPlaylistPickerRequest(
+                                        listOf(com.asmr.player.playback.MediaItemFactory.fromPodcastEpisode(feed, episode))
+                                    )
+                                }
+                            },
+                            viewModel = podcastDetailViewModel
+                        )
+                    }
                 }
                                 composable("library_filter") {
                     SecondaryPageBackground(topPadding = secondaryPageTopPadding) {

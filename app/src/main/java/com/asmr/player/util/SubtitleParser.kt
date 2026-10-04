@@ -14,7 +14,13 @@ data class SubtitleEntry(
     val endMs: Long,
     val text: String,
     /** 自动生成的字幕同时保存日文原文；外挂字幕为空。 */
-    val japaneseText: String = ""
+    val japaneseText: String = "",
+    /**
+     * 显示模式解析出的分段，供注音判断「这段文本是不是日文」。
+     * 中文译文同样是汉字，所以必须由带语言标记的分段而不是渲染层来猜语言。
+     * 空列表表示未解析（中文模式或原始未处理字幕），此时直接用 [text]。
+     */
+    val displaySegments: List<DisplaySegment> = emptyList()
 )
 
 object SubtitleParser {

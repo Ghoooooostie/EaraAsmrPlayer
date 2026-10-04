@@ -2,6 +2,7 @@ package com.asmr.player.data.local.datastore
 
 import android.content.Context
 import androidx.datastore.preferences.core.*
+import com.asmr.player.data.settings.AppContentMode
 import com.asmr.player.data.settings.CoverPreviewMode
 import com.asmr.player.data.settings.LyricsPageSettings
 import com.asmr.player.data.settings.NowPlayingHomeLayoutMode
@@ -22,6 +23,7 @@ import javax.inject.Singleton
 
 data class ThemeBootstrapPreferences(
     val theme: String = "system",
+    val contentMode: String = "asmr",
     val dynamicPlayerHueEnabled: Boolean = false,
     val staticHueArgbLight: Int? = null,
     val staticHueArgbDark: Int? = null,
@@ -34,6 +36,7 @@ class SettingsDataStore @Inject constructor(
     @ApplicationContext private val context: Context
 ) {
     private val themeKey = stringPreferencesKey("theme")
+    private val contentModeKey = stringPreferencesKey("content_mode")
     private val sfwModeKey = booleanPreferencesKey("sfw_mode")
     private val libraryRootsKey = stringSetPreferencesKey("library_roots")
     private val dynamicPlayerHueEnabledKey = booleanPreferencesKey("dynamic_player_hue_enabled")
@@ -62,6 +65,10 @@ class SettingsDataStore @Inject constructor(
     private val lastHandledClipboardEventKey = stringPreferencesKey("last_handled_clipboard_event")
 
     val theme: Flow<String> = context.settingsDataStore.data.map { it[themeKey] ?: "system" }
+    val contentMode: Flow<AppContentMode> = context.settingsDataStore.data.map {
+        AppContentMode.fromStorageValue(it[contentModeKey])
+    }
+    val sfwMode: Flow<Boolean> = context.settingsDataStore.data.map { it[sfwModeKey] ?: false }
     val libraryRoots: Flow<Set<String>> = context.settingsDataStore.data.map { it[libraryRootsKey] ?: emptySet() }
     val dynamicPlayerHueEnabled: Flow<Boolean> = context.settingsDataStore.data.map { it[dynamicPlayerHueEnabledKey] ?: false }
     val staticHueArgbLight: Flow<Int?> = context.settingsDataStore.data.map { prefs ->
@@ -85,6 +92,7 @@ class SettingsDataStore @Inject constructor(
     val themeBootstrapPreferences: Flow<ThemeBootstrapPreferences> = context.settingsDataStore.data.map { prefs ->
         ThemeBootstrapPreferences(
             theme = prefs[themeKey] ?: "system",
+            contentMode = prefs[contentModeKey] ?: "asmr",
             dynamicPlayerHueEnabled = prefs[dynamicPlayerHueEnabledKey] ?: false,
             staticHueArgbLight = if (prefs.contains(staticHueArgbLightKey)) prefs[staticHueArgbLightKey] else null,
             staticHueArgbDark = if (prefs.contains(staticHueArgbDarkKey)) prefs[staticHueArgbDarkKey] else null,
@@ -140,6 +148,10 @@ class SettingsDataStore @Inject constructor(
 
     suspend fun setTheme(theme: String) {
         context.settingsDataStore.edit { it[themeKey] = theme }
+    }
+
+    suspend fun setContentMode(mode: AppContentMode) {
+        context.settingsDataStore.edit { it[contentModeKey] = mode.storageValue }
     }
 
     suspend fun setSfwMode(enabled: Boolean) {

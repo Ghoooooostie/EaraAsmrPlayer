@@ -43,6 +43,7 @@ import com.asmr.player.data.remote.api.WorkDetailsResponse
 import com.asmr.player.data.remote.auth.DlsiteAuthStore
 import com.asmr.player.data.remote.auth.buildDlsiteCookieHeader
 import com.asmr.player.data.remote.crawler.AsmrOneCrawler
+import com.asmr.player.data.remote.otomekoe.OtomeKoeClient
 import com.asmr.player.data.remote.crawler.AsmrOneSearchResult
 import com.asmr.player.data.remote.crawler.AsmrOneTracksResult
 import com.asmr.player.data.remote.crawler.selectAsmrOneWorkForRj
@@ -63,6 +64,8 @@ import com.asmr.player.data.remote.download.DownloadManager
 import com.asmr.player.data.remote.download.DownloadBatchRequest
 import com.asmr.player.data.remote.download.EnqueueDownloadBatchResult
 import com.asmr.player.data.remote.download.RelativeDownloadItem
+import com.asmr.player.data.remote.download.enqueueOtomeKoeAudio
+import com.asmr.player.data.remote.download.HlsPlaylist
 import com.asmr.player.data.remote.scraper.DLSiteScraper
 import com.asmr.player.data.remote.scraper.DlsiteRecommendedWork
 import com.asmr.player.data.remote.scraper.DlsiteRecommendations
@@ -136,6 +139,7 @@ class AlbumDetailViewModel @Inject constructor(
     private val trackDao: TrackDao,
     private val asmrOneCrawler: AsmrOneCrawler,
     private val asmrOneAvailabilityApi: AsmrOneAvailabilityApi,
+    private val otomeKoeClient: OtomeKoeClient,
     private val settingsRepository: SettingsRepository,
     private val dlsiteScraper: DLSiteScraper,
     private val dlsiteProductInfoClient: DlsiteProductInfoClient,
@@ -434,6 +438,7 @@ class AlbumDetailViewModel @Inject constructor(
             )
         )
         if (shouldReload) ensureAsmrOneLoaded()
+        ensureOtomeKoeLoaded()
     }
 
     private suspend fun fetchBackupAsmrOneTracksByRj(
@@ -1580,6 +1585,37 @@ class AlbumDetailViewModel @Inject constructor(
         }
         ensureDlsiteLoaded()
         ensureAsmrOneLoaded()
+        ensureOtomeKoeLoaded()
+    }
+
+    /**
+     * 按 RJ 码探测 OtomeKoe 的在线音频流（固定地址模式，纯探测请求体积小）。
+     * 结果写入 [AlbumDetailModel.otomeKoeStreamUrl]，未收录时为 null。
+     */
+    fun ensureOtomeKoeLoaded() {
+        val current = _uiState.value as? AlbumDetailUiState.Success ?: return
+        val keyRj = current.model.rjCode.trim().uppercase()
+        if (
+            keyRj.isBlank() ||
+            current.model.hasResolvedOtomeKoe ||
+            current.model.isLoadingOtomeKoe
+        ) return
+        _uiState.value = AlbumDetailUiState.Success(
+            model = current.model.copy(isLoadingOtomeKoe = true)
+        )
+        viewModelScope.launch {
+            val streamUrl = runCatching { otomeKoeClient.probeStreamUrl(keyRj) }.getOrNull()
+            val latest = _uiState.value as? AlbumDetailUiState.Success ?: return@launch
+            val latestRj = latest.model.rjCode.trim().uppercase()
+            if (!latestRj.equals(keyRj, ignoreCase = true)) return@launch
+            _uiState.value = AlbumDetailUiState.Success(
+                model = latest.model.copy(
+                    otomeKoeStreamUrl = streamUrl,
+                    isLoadingOtomeKoe = false,
+                    hasResolvedOtomeKoe = true
+                )
+            )
+        }
     }
 
     fun refreshAsmrOneSection() {
@@ -2248,7 +2284,12 @@ class AlbumDetailViewModel @Inject constructor(
             if (existingLocalKeys.contains(key) || existingLocalKeysNoGroup.contains(keyNoGroup)) {
                 return@forEachIndexed
             }
-            val ext = url.substringBefore('?').substringAfterLast('.', "").takeIf { it.length in 2..6 } ?: "mp3"
+            val ext = if (HlsPlaylist.isPlaylistUrl(url)) {
+                // HLS 会被下载器转成 AAC 落地，文件名不能用播放列表后缀。
+                "aac"
+            } else {
+                url.substringBefore('?').substringAfterLast('.', "").takeIf { it.length in 2..6 } ?: "mp3"
+            }
             val fileName = "${(index + 1).toString().padStart(2, '0')}_${safeFileName(track.title)}.$ext"
             items += RelativeDownloadItem(url = url, relativePath = fileName)
         }
@@ -2271,6 +2312,34 @@ class AlbumDetailViewModel @Inject constructor(
                     ),
                 ),
             )
+        }
+    }
+
+    /**
+     * 下载 OtomeKoe 在线音频。该站只提供 HLS 流（m3u8），下载时由下载器逐分片取出 AAC 数据，
+     * 以 .aac 落到作品目录，下载完成后与本地专辑一样可被扫描入库播放。
+     */
+    fun downloadOtomeKoeAudio() {
+        val current = _uiState.value as? AlbumDetailUiState.Success ?: return
+        val model = current.model
+        val streamUrl = model.otomeKoeStreamUrl?.trim().orEmpty()
+        if (streamUrl.isBlank()) {
+            messageManager.showError("OtomeKoe 在线音频暂不可用")
+            return
+        }
+        val album = model.displayAlbum
+        viewModelScope.launch(Dispatchers.IO) {
+            val result = downloadManager.enqueueOtomeKoeAudio(
+                streamUrl = streamUrl,
+                title = album.title,
+                coverUrl = album.coverUrl,
+                rjCode = album.rjCode,
+                workId = album.workId,
+                circle = album.circle,
+                cv = album.cv,
+                tagsCsv = album.tags.joinToString(","),
+            )
+            showEnqueueBatchResult(result)
         }
     }
 

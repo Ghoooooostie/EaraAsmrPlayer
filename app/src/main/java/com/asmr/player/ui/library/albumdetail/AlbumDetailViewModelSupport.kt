@@ -266,7 +266,10 @@ data class AlbumDetailModel(
     val isLoadingDlsite: Boolean,
     val isLoadingDlsiteTrial: Boolean,
     val isLoadingAsmrOne: Boolean,
-    val isLoadingDlsitePlay: Boolean
+    val isLoadingDlsitePlay: Boolean,
+    val otomeKoeStreamUrl: String? = null,
+    val isLoadingOtomeKoe: Boolean = false,
+    val hasResolvedOtomeKoe: Boolean = false
 )
 
 internal fun resolveAlbumDetailRj(routeRj: String?, localAlbum: Album?): String {

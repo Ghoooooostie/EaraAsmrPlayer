@@ -11,6 +11,8 @@ import com.asmr.player.playback.PlaybackSnapshot
 import com.asmr.player.playback.MediaItemFactory
 import com.asmr.player.playback.PlayerConnection
 import com.asmr.player.domain.model.Album
+import com.asmr.player.domain.model.PodcastEpisode
+import com.asmr.player.domain.model.PodcastFeed
 import com.asmr.player.domain.model.Track
 import com.asmr.player.data.local.db.dao.TrackDao
 import com.asmr.player.data.settings.SettingsRepository
@@ -62,6 +64,7 @@ import com.asmr.player.playback.SlicePlaybackController
 import com.asmr.player.playback.AppVolume
 
 import com.asmr.player.util.MessageManager
+import com.asmr.player.util.OtomeKoeMedia
 import kotlin.math.roundToLong
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -611,6 +614,32 @@ class PlayerViewModel @Inject constructor(
         )
     }
 
+    /** 播客剧集播放:构造临时 Album/Track 走通用管线,收听统计照常写入。 */
+    suspend fun playPodcastEpisodes(
+        feed: PodcastFeed,
+        episodes: List<PodcastEpisode>,
+        startIndex: Int
+    ): Boolean {
+        if (episodes.isEmpty()) return false
+        val album = Album(
+            title = feed.title,
+            path = feed.id,
+            circle = feed.author,
+            coverUrl = feed.artworkUrl,
+            workId = PodcastFeed.workIdFor(feed.id)
+        )
+        val tracks = episodes.map { episode ->
+            Track(
+                albumId = album.id,
+                title = episode.title,
+                path = episode.localPath.ifBlank { episode.audioUrl },
+                duration = if (episode.durationMs > 0L) episode.durationMs / 1000.0 else 0.0
+            )
+        }
+        val startTrack = tracks.getOrNull(startIndex) ?: return false
+        return playTracksPrepared(album = album, tracks = tracks, startTrack = startTrack)
+    }
+
     fun playAlbumResume(album: Album, resumeMediaId: String?, startPositionMs: Long) {
         viewModelScope.launch {
             val trackEntities = runCatching { trackDao.getTracksForAlbumOnce(album.id) }.getOrNull().orEmpty()
@@ -689,7 +718,7 @@ class PlayerViewModel @Inject constructor(
             messageManager.showError("播放器未连接")
             return
         }
-        if (startTrack.path.contains(".m3u8", ignoreCase = true)) {
+        if (isUnsupportedM3u8Track(startTrack)) {
             messageManager.showError("当前不支持 m3u8 流媒体，请先下载音频文件")
             return
         }
@@ -708,7 +737,7 @@ class PlayerViewModel @Inject constructor(
             messageManager.showError("播放器未连接")
             return false
         }
-        if (startTrack.path.contains(".m3u8", ignoreCase = true)) {
+        if (isUnsupportedM3u8Track(startTrack)) {
             messageManager.showError("当前不支持 m3u8 流媒体，请先下载音频文件")
             return false
         }
@@ -728,6 +757,12 @@ class PlayerViewModel @Inject constructor(
             playWhenReady = true
         )
         return true
+    }
+
+    // 通用音频路径仍禁止 m3u8；仅放行 OtomeKoe 的 HLS 在线流（该站没有下载替代）。
+    private fun isUnsupportedM3u8Track(track: Track): Boolean {
+        return track.path.contains(".m3u8", ignoreCase = true) &&
+            !OtomeKoeMedia.isOtomeKoeStreamUrl(track.path)
     }
 
     fun playVideo(title: String, uriOrPath: String) {

@@ -11,6 +11,8 @@ import com.asmr.player.data.lyrics.EXTRA_REMOTE_SUBTITLE_SOURCES_JSON
 import com.asmr.player.data.lyrics.EXTRA_TRACK_GROUP
 import com.asmr.player.data.lyrics.deriveLyricsRelativePathNoExt
 import com.asmr.player.domain.model.Album
+import com.asmr.player.domain.model.PodcastEpisode
+import com.asmr.player.domain.model.PodcastFeed
 import com.asmr.player.domain.model.Track
 import com.asmr.player.util.RemoteSubtitleSource
 import java.io.File
@@ -34,8 +36,7 @@ data class MediaItemRequest(
 )
 
 object MediaItemFactory {
-    fun fromTrack(album: Album, track: Track): MediaItem {
-        val circle = album.circle.trim()
+    fun fromTrack(album: Album, track: Track): MediaItem {        val circle = album.circle.trim()
         val cv = album.cv.trim()
         val artist = when {
             circle.isNotBlank() && cv.isNotBlank() -> "$circle / $cv"
@@ -60,6 +61,21 @@ object MediaItemFactory {
                     deriveLyricsRelativePathNoExt(track.path, album.getAllLocalPaths())
                 },
                 remoteSubtitleSources = track.remoteSubtitleSources
+            )
+        )
+    }
+
+    /** 播客剧集的 MediaItem 快照,用于收藏/播放列表等 mediaId 化存储;uri 始终用远程地址,保证快照长期有效。 */
+    fun fromPodcastEpisode(feed: PodcastFeed, episode: PodcastEpisode): MediaItem {
+        return fromRequest(
+            MediaItemRequest(
+                mediaId = episode.audioUrl,
+                uri = episode.audioUrl,
+                title = episode.title,
+                artist = feed.author,
+                albumTitle = feed.title,
+                artworkUri = episode.artworkUrl.ifBlank { feed.artworkUrl },
+                albumWorkId = PodcastFeed.workIdFor(feed.id)
             )
         )
     }

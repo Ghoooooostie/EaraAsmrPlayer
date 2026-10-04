@@ -10,6 +10,12 @@ import com.asmr.player.data.remote.api.AsmrOneCollectedSearchItem
 import com.asmr.player.data.remote.api.WorkDetailsResponse
 import com.asmr.player.data.remote.crawler.AsmrOneCrawler
 import com.asmr.player.data.remote.dlsite.DlsitePlayLibraryClient
+import com.asmr.player.data.remote.download.DownloadManager
+import com.asmr.player.data.remote.download.EnqueueDownloadBatchResult
+import com.asmr.player.data.remote.download.enqueueOtomeKoeAudio
+import com.asmr.player.data.remote.otomekoe.OtomeKoeClient
+import com.asmr.player.data.remote.otomekoe.OtomeKoeBlockedException
+import com.asmr.player.data.remote.otomekoe.OtomeKoePost
 import com.asmr.player.data.remote.scraper.DLSiteScraper
 import com.asmr.player.data.settings.SettingsRepository
 import com.asmr.player.domain.model.Album
@@ -68,9 +74,11 @@ class SearchViewModel @Inject constructor(
     private val dlsitePlayLibraryClient: DlsitePlayLibraryClient,
     private val asmrOneAvailabilityApi: AsmrOneAvailabilityApi,
     private val asmrOneCrawler: AsmrOneCrawler,
+    private val otomeKoeClient: OtomeKoeClient,
     private val settingsRepository: SettingsRepository,
     private val searchCacheStore: SearchCacheStore,
     private val hotListeningApi: HotListeningApi,
+    private val downloadManager: DownloadManager,
     val messageManager: MessageManager
 ) : ViewModel() {
     private val pageSize = 30
@@ -80,6 +88,7 @@ class SearchViewModel @Inject constructor(
     private var presaleOnly: Boolean = false
     private var chineseTranslatedOnly: Boolean = false
     private var collectedOnly: Boolean = true
+    private var otomeKoeOnly: Boolean = false
     private var hasSubtitle: Boolean = false
     private var allAges: Boolean = false
     private var enrichJob: Job? = null
@@ -138,7 +147,8 @@ class SearchViewModel @Inject constructor(
         initialCollectedOnly: Boolean = true,
         initialCollectedSort: SearchCollectedSortOption = SearchCollectedSortOption.ReleaseNew,
         initialHasSubtitle: Boolean = false,
-        initialAllAges: Boolean = false
+        initialAllAges: Boolean = false,
+        initialOtomeKoeOnly: Boolean = false
     ) {
         if (!bootstrapped.compareAndSet(false, true)) return
         viewModelScope.launch {
@@ -151,12 +161,14 @@ class SearchViewModel @Inject constructor(
                     purchasedOnly = initialPurchasedOnly,
                     presaleOnly = false,
                     chineseTranslatedOnly = false,
-                    collectedOnly = initialCollectedOnly
+                    collectedOnly = initialCollectedOnly,
+                    otomeKoeOnly = initialOtomeKoeOnly
                 )
                 purchasedOnly = initialFilters.purchasedOnly
                 presaleOnly = initialFilters.presaleOnly
                 chineseTranslatedOnly = initialFilters.chineseTranslatedOnly
                 collectedOnly = initialFilters.collectedOnly
+                otomeKoeOnly = initialFilters.otomeKoeOnly
                 hasSubtitle = initialHasSubtitle
                 allAges = initialAllAges
                 currentCollectedSort = initialCollectedSort
@@ -192,6 +204,7 @@ class SearchViewModel @Inject constructor(
             presaleOnly = presaleOnly,
             chineseTranslatedOnly = chineseTranslatedOnly,
             collectedOnly = collectedOnly,
+            otomeKoeOnly = otomeKoeOnly,
             hasSubtitle = hasSubtitle,
             allAges = allAges,
             locale = currentLocale
@@ -206,6 +219,7 @@ class SearchViewModel @Inject constructor(
         presaleOnly: Boolean,
         chineseTranslatedOnly: Boolean,
         collectedOnly: Boolean,
+        otomeKoeOnly: Boolean,
         hasSubtitle: Boolean,
         allAges: Boolean,
         locale: String?
@@ -217,7 +231,8 @@ class SearchViewModel @Inject constructor(
             purchasedOnly = purchasedOnly,
             presaleOnly = presaleOnly,
             chineseTranslatedOnly = chineseTranslatedOnly,
-            collectedOnly = collectedOnly
+            collectedOnly = collectedOnly,
+            otomeKoeOnly = otomeKoeOnly
         )
         if (nextFilters.purchasedOnly && !dlsitePlayLibraryClient.hasStoredCredentials()) {
             messageManager.showWarning("请先登录 DLsite 后再使用\"已购\"搜索")
@@ -231,6 +246,7 @@ class SearchViewModel @Inject constructor(
         this.presaleOnly = nextFilters.presaleOnly
         this.chineseTranslatedOnly = nextFilters.chineseTranslatedOnly
         this.collectedOnly = nextFilters.collectedOnly
+        this.otomeKoeOnly = nextFilters.otomeKoeOnly
         this.hasSubtitle = hasSubtitle
         this.allAges = allAges
         currentLocale = locale
@@ -262,6 +278,7 @@ class SearchViewModel @Inject constructor(
         presaleOnly: Boolean = this.presaleOnly,
         chineseTranslatedOnly: Boolean = this.chineseTranslatedOnly,
         collectedOnly: Boolean = this.collectedOnly,
+        otomeKoeOnly: Boolean = this.otomeKoeOnly,
         hasSubtitle: Boolean = this.hasSubtitle,
         allAges: Boolean = this.allAges,
         locale: String? = currentLocale
@@ -270,12 +287,17 @@ class SearchViewModel @Inject constructor(
             purchasedOnly = purchasedOnly,
             presaleOnly = presaleOnly,
             chineseTranslatedOnly = chineseTranslatedOnly,
-            collectedOnly = collectedOnly
+            collectedOnly = collectedOnly,
+            otomeKoeOnly = otomeKoeOnly
         )
         val current = _uiState.value as? SearchUiState.Success ?: return false
         if (current.isBusy) return false
         if (nextFilters.purchasedOnly && !dlsitePlayLibraryClient.hasStoredCredentials()) {
             messageManager.showWarning("请先登录 DLsite 后再使用\"已购\"搜索")
+            return false
+        }
+        if (nextFilters.otomeKoeOnly && current.keyword.isBlank()) {
+            messageManager.showWarning("OtomeKoe 需要输入关键词后搜索")
             return false
         }
         val searchRequestChanged =
@@ -285,6 +307,7 @@ class SearchViewModel @Inject constructor(
                 this.presaleOnly != nextFilters.presaleOnly ||
                 this.chineseTranslatedOnly != nextFilters.chineseTranslatedOnly ||
                 this.collectedOnly != nextFilters.collectedOnly ||
+                this.otomeKoeOnly != nextFilters.otomeKoeOnly ||
                 this.hasSubtitle != hasSubtitle ||
                 this.allAges != allAges
         val localeChanged = currentLocale != locale
@@ -295,6 +318,7 @@ class SearchViewModel @Inject constructor(
         this.presaleOnly = nextFilters.presaleOnly
         this.chineseTranslatedOnly = nextFilters.chineseTranslatedOnly
         this.collectedOnly = nextFilters.collectedOnly
+        this.otomeKoeOnly = nextFilters.otomeKoeOnly
         this.hasSubtitle = hasSubtitle
         this.allAges = allAges
         currentLocale = locale
@@ -399,6 +423,7 @@ class SearchViewModel @Inject constructor(
                     presaleOnly = presaleOnly,
                     chineseTranslatedOnly = chineseTranslatedOnly,
                     collectedOnly = collectedOnly,
+                    otomeKoeOnly = otomeKoeOnly,
                     hasSubtitle = hasSubtitle,
                     allAges = allAges
                 )
@@ -413,6 +438,7 @@ class SearchViewModel @Inject constructor(
                     presaleOnly = presaleOnly,
                     chineseTranslatedOnly = chineseTranslatedOnly,
                     collectedOnly = collectedOnly,
+                    otomeKoeOnly = otomeKoeOnly,
                     hasSubtitle = hasSubtitle,
                     allAges = allAges,
                     locale = currentLocale,
@@ -435,6 +461,14 @@ class SearchViewModel @Inject constructor(
                         page = page,
                         baseItems = pageResult.items,
                         resultRevision = resultRevision
+                    )
+                } else if (otomeKoeOnly && pageResult.items.isNotEmpty()) {
+                    // OtomeKoe 结果自带标题/社团/CV/标签/封面，只做 asmr.one 收录角标标记。
+                    startMarkAsmrOneAvailability(
+                        keyword = normalizedKeyword,
+                        page = page,
+                        baseItems = pageResult.items,
+                        resultRevision = resultRevision,
                     )
                 } else if (!purchasedOnly && pageResult.items.isNotEmpty()) {
                     startEnrichDlsiteDetails(
@@ -482,6 +516,7 @@ class SearchViewModel @Inject constructor(
                     presaleOnly = previousSuccess.presaleOnly
                     chineseTranslatedOnly = previousSuccess.chineseTranslatedOnly
                     collectedOnly = previousSuccess.collectedOnly
+                    otomeKoeOnly = previousSuccess.otomeKoeOnly
                     hasSubtitle = previousSuccess.hasSubtitle
                     allAges = previousSuccess.allAges
                     currentLocale = previousSuccess.locale
@@ -534,6 +569,7 @@ class SearchViewModel @Inject constructor(
         presaleOnly: Boolean,
         chineseTranslatedOnly: Boolean,
         collectedOnly: Boolean,
+        otomeKoeOnly: Boolean,
         hasSubtitle: Boolean,
         allAges: Boolean
     ): SearchPageResult {
@@ -541,13 +577,27 @@ class SearchViewModel @Inject constructor(
             purchasedOnly = purchasedOnly,
             presaleOnly = presaleOnly,
             chineseTranslatedOnly = chineseTranslatedOnly,
-            collectedOnly = collectedOnly
+            collectedOnly = collectedOnly,
+            otomeKoeOnly = otomeKoeOnly
         )
         val appliedHasSubtitle = hasSubtitle && selectedFilter.supportsWorkFilters
         val appliedAllAges = allAges && selectedFilter.supportsWorkFilters
         if (purchasedOnly) {
             val resp = dlsitePlayLibraryClient.searchPurchased(keyword, page, pageSize)
             return SearchPageResult(items = resp.items, canGoNext = resp.canGoNext)
+        }
+        if (otomeKoeOnly) {
+            // OtomeKoe 只提供关键词检索,空关键词直接请求会在 client 层抛 IllegalArgumentException。
+            if (keyword.isBlank()) return SearchPageResult(items = emptyList(), canGoNext = false)
+            val result = otomeKoeClient.search(keyword, page)
+            val items = result.items.map { it.toSearchAlbum() }
+            return SearchPageResult(
+                items = items,
+                canGoNext = result.canGoNext,
+                resolvedDetailRjCodes = items
+                    .mapNotNull { it.rjCode.trim().uppercase().takeIf(String::isNotBlank) }
+                    .toSet()
+            )
         }
         val keywordWithBlockedTerms = appendBlockedKeywordsForOnlineSearch(
             keyword = keyword,
@@ -812,7 +862,8 @@ class SearchViewModel @Inject constructor(
             purchasedOnly = cached.purchasedOnly,
             presaleOnly = cached.presaleOnly,
             chineseTranslatedOnly = cached.chineseTranslatedOnly,
-            collectedOnly = cached.collectedOnly
+            collectedOnly = cached.collectedOnly,
+            otomeKoeOnly = cached.otomeKoeOnly
         )
         currentOrder = order
         currentCollectedSort = collectedSort
@@ -820,6 +871,7 @@ class SearchViewModel @Inject constructor(
         presaleOnly = filters.presaleOnly
         chineseTranslatedOnly = filters.chineseTranslatedOnly
         collectedOnly = filters.collectedOnly
+        otomeKoeOnly = filters.otomeKoeOnly
         hasSubtitle = cached.hasSubtitle
         allAges = cached.allAges
         currentLocale = cached.locale
@@ -833,6 +885,7 @@ class SearchViewModel @Inject constructor(
             presaleOnly = filters.presaleOnly,
             chineseTranslatedOnly = filters.chineseTranslatedOnly,
             collectedOnly = filters.collectedOnly,
+            otomeKoeOnly = filters.otomeKoeOnly,
             hasSubtitle = cached.hasSubtitle,
             allAges = cached.allAges,
             locale = cached.locale,
@@ -884,6 +937,7 @@ class SearchViewModel @Inject constructor(
                         presaleOnly = latest.presaleOnly,
                         chineseTranslatedOnly = latest.chineseTranslatedOnly,
                         collectedOnly = latest.collectedOnly,
+                        otomeKoeOnly = latest.otomeKoeOnly,
                         hasSubtitle = latest.hasSubtitle,
                         allAges = latest.allAges,
                         locale = latest.locale,
@@ -899,6 +953,9 @@ class SearchViewModel @Inject constructor(
     private fun toUserMessage(e: Throwable): String {
         val raw = e.message.orEmpty()
         if (raw.contains("请先登录")) return "请先登录后再使用\"已购\"搜索"
+        if (e is OtomeKoeBlockedException) {
+            return AppErrorMessageFormatter.sanitize(raw, fallback = "OtomeKoe 暂时无法访问，请稍后重试")
+        }
         return when (e) {
             is SocketTimeoutException -> "连接超时，请稍后重试"
             is IOException -> "网络连接失败，请检查网络后重试"
@@ -1196,6 +1253,35 @@ class SearchViewModel @Inject constructor(
         private const val ASMR_ONE_NEGATIVE_CACHE_TTL_MS = 5 * 60 * 1_000L
         private const val COLLECTED_WORK_NO_RESOLVE_TIMEOUT_MS = 3_000L
     }
+
+    /** 从搜索结果直接下载 OtomeKoe 在线音频（HLS/m3u8 → .aac）。 */
+    fun downloadOtomeKoeAudio(album: Album) {
+        val streamUrl = album.otomeKoeStreamUrl?.trim().orEmpty()
+        if (streamUrl.isBlank()) {
+            messageManager.showError("OtomeKoe 在线音频暂不可用")
+            return
+        }
+        viewModelScope.launch(Dispatchers.IO) {
+            val result = downloadManager.enqueueOtomeKoeAudio(
+                streamUrl = streamUrl,
+                title = album.title,
+                coverUrl = album.coverUrl,
+                rjCode = album.rjCode,
+                workId = album.workId,
+                circle = album.circle,
+                cv = album.cv,
+                tagsCsv = album.tags.joinToString(","),
+            )
+            when (result) {
+                is EnqueueDownloadBatchResult.Accepted ->
+                    messageManager.showInfo("正在加入下载队列（${result.itemCount}项）")
+                EnqueueDownloadBatchResult.DirectoryUnavailable ->
+                    messageManager.showError("下载目录不可用，请重新选择或重置为默认目录")
+                EnqueueDownloadBatchResult.TaskBlocked ->
+                    messageManager.showError("该任务已在下载中，请勿重复添加")
+            }
+        }
+    }
 }
 
 internal fun AsmrOneCollectedSearchItem.resolvedWorkNo(fallbackWorkNo: String = ""): String {
@@ -1224,6 +1310,24 @@ internal fun WorkDetailsResponse.resolvedWorkNo(): String {
         .map { DlsiteWorkNo.normalizeWorkNo(it, minimumDigits = 6) }
         .firstOrNull { it.isNotBlank() }
         .orEmpty()
+}
+
+internal fun OtomeKoePost.toSearchAlbum(): Album {
+    val streamUrl = audioStreamUrls
+        .firstOrNull { it.contains(".m3u8", ignoreCase = true) }
+        ?: audioStreamUrls.firstOrNull()
+    return Album(
+        title = title.trim().ifBlank { rjCode },
+        path = "",
+        circle = circle,
+        cv = cv,
+        tags = tags,
+        coverUrl = coverUrl,
+        workId = rjCode,
+        rjCode = rjCode,
+        releaseDate = releaseDate,
+        otomeKoeStreamUrl = streamUrl
+    )
 }
 
 internal fun AsmrOneCollectedSearchItem.toCollectedAlbum(fallbackWorkNo: String = ""): Album {
@@ -1297,18 +1401,27 @@ private fun normalizeSearchFilters(
     purchasedOnly: Boolean,
     presaleOnly: Boolean,
     chineseTranslatedOnly: Boolean,
-    collectedOnly: Boolean
+    collectedOnly: Boolean,
+    otomeKoeOnly: Boolean = false
 ): SearchFilterFlags {
     val normalizedPurchasedOnly = purchasedOnly
     val normalizedChineseTranslatedOnly = !normalizedPurchasedOnly && chineseTranslatedOnly
     val normalizedPresaleOnly = !normalizedPurchasedOnly && !normalizedChineseTranslatedOnly && presaleOnly
-    val normalizedCollectedOnly =
-        !normalizedPurchasedOnly && !normalizedChineseTranslatedOnly && !normalizedPresaleOnly && collectedOnly
+    val normalizedOtomeKoeOnly = !normalizedPurchasedOnly &&
+        !normalizedChineseTranslatedOnly &&
+        !normalizedPresaleOnly &&
+        otomeKoeOnly
+    val normalizedCollectedOnly = !normalizedPurchasedOnly &&
+        !normalizedChineseTranslatedOnly &&
+        !normalizedPresaleOnly &&
+        !normalizedOtomeKoeOnly &&
+        collectedOnly
     return SearchFilterFlags(
         purchasedOnly = normalizedPurchasedOnly,
         presaleOnly = normalizedPresaleOnly,
         chineseTranslatedOnly = normalizedChineseTranslatedOnly,
-        collectedOnly = normalizedCollectedOnly
+        collectedOnly = normalizedCollectedOnly,
+        otomeKoeOnly = normalizedOtomeKoeOnly
     )
 }
 
@@ -1316,7 +1429,8 @@ private data class SearchFilterFlags(
     val purchasedOnly: Boolean,
     val presaleOnly: Boolean,
     val chineseTranslatedOnly: Boolean,
-    val collectedOnly: Boolean
+    val collectedOnly: Boolean,
+    val otomeKoeOnly: Boolean = false
 )
 
 private data class SearchPageResult(
@@ -1416,6 +1530,7 @@ sealed class SearchUiState {
         val presaleOnly: Boolean,
         val chineseTranslatedOnly: Boolean,
         val collectedOnly: Boolean,
+        val otomeKoeOnly: Boolean = false,
         val hasSubtitle: Boolean = false,
         val allAges: Boolean = false,
         val locale: String?,

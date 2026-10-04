@@ -167,6 +167,9 @@ class PlaylistRepository @Inject constructor(
         playlistItemDao.deleteItem(playlistId, mediaId)
     }
 
+    suspend fun isItemInPlaylist(playlistId: Long, mediaId: String): Boolean =
+        playlistItemDao.isItemInPlaylist(playlistId, mediaId)
+
     @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
     fun observeIsFavorite(mediaId: String): Flow<Boolean> {
         return playlistDao.getPlaylistByName(PLAYLIST_FAVORITES).map { playlist ->

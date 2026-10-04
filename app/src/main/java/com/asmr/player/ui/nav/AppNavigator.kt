@@ -12,6 +12,11 @@ object Routes {
     const val HotListening = "hot_listening"
     const val NowPlaying = "now_playing"
 
+    const val PodcastDiscover = "podcast_discover"
+    const val PodcastSearch = "podcast_search"
+    const val PodcastSubscriptions = "podcast_subscriptions"
+    const val PodcastDetail = "podcast_detail"
+
     const val AlbumDetailByIdPattern = "album_detail/{albumId}?rjCode={rjCode}&initialTab={initialTab}"
     const val AlbumDetailOnlineByRjPattern = "album_detail_online/{rj}"
 

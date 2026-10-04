@@ -27,6 +27,7 @@ import com.asmr.player.util.MessageManager
 import com.asmr.player.playback.AppVolume
 import dagger.hilt.android.qualifiers.ApplicationContext
 import com.asmr.player.util.NetworkMeteredChecker
+import com.asmr.player.util.OtomeKoeMedia
 import com.asmr.player.util.RemoteSubtitleSource
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -289,10 +290,13 @@ class PlayerConnection @Inject constructor(
                         lastErrorAtMs = now
                         val item = controller?.currentMediaItem
                         val uri = item?.localConfiguration?.uri?.toString().orEmpty()
-                        val msg = if (uri.contains(".m3u8", ignoreCase = true)) {
-                            "当前不支持 m3u8 流媒体，请先下载音频文件"
-                        } else {
-                            "播放失败：${error.errorCodeName}"
+                        val msg = when {
+                            uri.contains(".m3u8", ignoreCase = true) &&
+                                !OtomeKoeMedia.isOtomeKoeStreamUrl(uri) ->
+                                "当前不支持 m3u8 流媒体，请先下载音频文件"
+                            OtomeKoeMedia.isOtomeKoeStreamUrl(uri) ->
+                                "OtomeKoe 在线播放失败，请检查网络或稍后重试"
+                            else -> "播放失败：${error.errorCodeName}"
                         }
                         messageManager.showError(msg)
                         android.util.Log.e(

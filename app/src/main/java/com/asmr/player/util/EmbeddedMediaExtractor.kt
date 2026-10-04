@@ -54,6 +54,9 @@ object EmbeddedMediaExtractor {
     fun extractEmbeddedLyricsEntries(context: Context, pathOrUri: String): List<SubtitleEntry> {
         return runCatching {
             val text = readEmbeddedLyricsText(context, pathOrUri) ?: return@runCatching emptyList()
+            // 播客等音频的 USLT/lyrics 标签里常塞 HTML 节目简介，并非歌词，
+            // 若当成歌词会覆盖用户生成的字幕，这里直接忽略。
+            if (looksLikeHtmlDocument(text)) return@runCatching emptyList()
             val hasLrcTs = text.contains('[') && text.contains(']')
             if (hasLrcTs) {
                 SubtitleParser.parseText("lrc", text)
@@ -63,6 +66,15 @@ object EmbeddedMediaExtractor {
                 listOf(SubtitleEntry(0, end, text))
             }
         }.getOrDefault(emptyList())
+    }
+
+    private val htmlTagRegex =
+        Regex("</?(p|br|div|span|ul|ol|li|a|b|i|em|strong|u|font|h[1-6]|table|tr|td|blockquote)\\b[^<>]*>", RegexOption.IGNORE_CASE)
+
+    private fun looksLikeHtmlDocument(text: String): Boolean {
+        if (htmlTagRegex.findAll(text).count() >= 2) return true
+        val lower = text.lowercase()
+        return lower.contains("&nbsp;") || lower.contains("&amp;") || lower.contains("&lt;")
     }
 
     private fun readDurationMs(context: Context, pathOrUri: String): Long {

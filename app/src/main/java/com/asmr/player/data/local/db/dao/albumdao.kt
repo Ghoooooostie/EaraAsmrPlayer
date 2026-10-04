@@ -42,6 +42,12 @@ interface AlbumDao {
     @Query("SELECT * FROM albums WHERE downloadPath = :downloadPath")
     suspend fun getAlbumsByDownloadPathOnce(downloadPath: String): List<AlbumEntity>
 
+    @Query("SELECT * FROM albums WHERE workId LIKE 'podcast:%' ORDER BY id DESC")
+    fun observeDownloadedPodcastAlbums(): Flow<List<AlbumEntity>>
+
+    @Query("SELECT * FROM albums WHERE workId LIKE 'podcast:%' ORDER BY id DESC")
+    suspend fun getDownloadedPodcastAlbumsOnce(): List<AlbumEntity>
+
     @Query("SELECT * FROM albums WHERE workId = :workId COLLATE NOCASE OR rjCode = :workId COLLATE NOCASE LIMIT 1")
     suspend fun getAlbumByWorkIdOnce(workId: String): AlbumEntity?
 

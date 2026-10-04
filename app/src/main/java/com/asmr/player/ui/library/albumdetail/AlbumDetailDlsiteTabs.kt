@@ -1150,6 +1150,9 @@ internal fun AlbumDlsiteInfoBreadcrumbTabV2(
     dlsiteRecommendations: DlsiteRecommendations,
     onOpenAlbumByRj: (String, DlsiteRecommendedWork?) -> Unit,
     loadRemoteFileSize: suspend (String) -> Long?,
+    otomeKoeStreamUrl: String? = null,
+    isLoadingOtomeKoe: Boolean = false,
+    onDownloadOtomeKoe: () -> Unit = {},
     onListStateAvailable: (LazyListState?) -> Unit = {}
 ) {
     val scope = rememberCoroutineScope()
@@ -1398,6 +1401,45 @@ internal fun AlbumDlsiteInfoBreadcrumbTabV2(
                             modifier = Modifier
                         )
                         DirectoryTreePanelState.MissingRj -> Unit
+                    }
+                }
+            }
+        }
+        if (otomeKoeStreamUrl != null || isLoadingOtomeKoe) {
+            item(key = "dlsite-otomekoe-header") {
+                AlbumDetailSectionHeading(
+                    title = "OtomeKoe",
+                    modifier = dlsiteAnimatedSectionModifier(
+                        Modifier
+                            .fillMaxWidth()
+                            .padding(
+                                start = AlbumDetailHorizontalPadding,
+                                end = AlbumDetailHorizontalPadding,
+                                top = 8.dp,
+                                bottom = 0.dp
+                            ),
+                        animateIntro = animateIntro
+                    )
+                )
+            }
+            item(key = "dlsite-otomekoe-content") {
+                Box(modifier = dlsiteAnimatedSectionModifier(Modifier.fillMaxWidth(), animateIntro)) {
+                    val streamUrl = otomeKoeStreamUrl
+                    if (streamUrl != null) {
+                        OtomeKoeStreamRow(
+                            title = album.title.ifBlank { "OtomeKoe 在线音频" },
+                            onPlay = {
+                                val track = Track(
+                                    albumId = album.id,
+                                    title = album.title.ifBlank { "OtomeKoe 在线音频" },
+                                    path = streamUrl
+                                )
+                                onPlayTracks(album, listOf(track), track)
+                            },
+                            onDownload = onDownloadOtomeKoe
+                        )
+                    } else {
+                        DlsiteDirectoryLoadingPanel()
                     }
                 }
             }
@@ -1932,3 +1974,76 @@ internal fun AlbumDlsitePlayBreadcrumbTabV2(
     }
 }
 
+
+@Composable
+private fun OtomeKoeStreamRow(
+    title: String,
+    onPlay: () -> Unit,
+    onDownload: (() -> Unit)? = null,
+    modifier: Modifier = Modifier
+) {
+    val colorScheme = AsmrTheme.colorScheme
+    Row(
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(horizontal = AlbumDetailHorizontalPadding, vertical = 4.dp)
+            .clip(RoundedCornerShape(12.dp))
+            .background(colorScheme.primarySoft.copy(alpha = if (colorScheme.isDark) 0.32f else 0.55f))
+            .clickable(onClick = onPlay)
+            .padding(horizontal = 12.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        Icon(
+            imageVector = Icons.Rounded.GraphicEq,
+            contentDescription = null,
+            modifier = Modifier.size(18.dp),
+            tint = colorScheme.primaryStrong
+        )
+        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text(
+                text = "在线音频",
+                style = MaterialTheme.typography.bodySmall,
+                color = colorScheme.textPrimary,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            Text(
+                text = title,
+                style = MaterialTheme.typography.labelSmall,
+                color = colorScheme.textSecondary,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+        if (onDownload != null) {
+            OutlinedIconButton(
+                onClick = onDownload,
+                colors = IconButtonDefaults.outlinedIconButtonColors(
+                    contentColor = if (colorScheme.isDark) colorScheme.onPrimaryContainer else colorScheme.primaryStrong
+                ),
+                border = BorderStroke(1.dp, colorScheme.primarySoft),
+                modifier = Modifier.size(30.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Rounded.Download,
+                    contentDescription = "下载",
+                    modifier = Modifier.size(18.dp)
+                )
+            }
+        }
+        FilledTonalButton(
+            onClick = onPlay,
+            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp),
+            colors = ButtonDefaults.filledTonalButtonColors(
+                containerColor = colorScheme.primarySoft,
+                contentColor = if (colorScheme.isDark) colorScheme.onPrimaryContainer else colorScheme.primaryStrong
+            ),
+            shape = RoundedCornerShape(10.dp),
+            modifier = Modifier.height(30.dp)
+        ) {
+            Text(text = "播放", style = MaterialTheme.typography.labelSmall, maxLines = 1)
+        }
+    }
+}

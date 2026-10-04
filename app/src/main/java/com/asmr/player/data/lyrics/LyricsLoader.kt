@@ -118,9 +118,14 @@ class LyricsLoader @Inject constructor(
 
         val normalized = normalizeAndDistinct(subs)
         if (normalized.size != subs.size) {
-            persistAutoLyrics(track.id, target, normalized.map { SubtitleEntry(it.startMs, it.endMs, it.text) })
+            persistAutoLyrics(
+                track.id,
+                target,
+                normalized.map { SubtitleEntry(it.startMs, it.endMs, it.text, it.japaneseText) }
+            )
         }
-        val entries = normalized.sortedBy { it.startMs }.map { SubtitleEntry(it.startMs, it.endMs, it.text) }
+        val entries = normalized.sortedBy { it.startMs }
+            .map { SubtitleEntry(it.startMs, it.endMs, it.text, it.japaneseText) }
         return LyricsResult(title = title, lyrics = entries)
     }
 
@@ -364,7 +369,8 @@ class LyricsLoader @Inject constructor(
                 trackId = trackId,
                 startMs = entry.startMs,
                 endMs = entry.endMs,
-                text = entry.text
+                text = entry.text,
+                japaneseText = entry.japaneseText
             )
         }
     }

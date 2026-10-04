@@ -31,7 +31,9 @@ data class Album(
     val audioTrackCount: Int = 0,
     val audioTotalDuration: Double = 0.0,
     val audioTotalSizeBytes: Long = 0L,
-    val tracks: List<Track> = emptyList()
+    val tracks: List<Track> = emptyList(),
+    /** OtomeKoe 在线音频的 HLS 流地址（m3u8）；为空表示非 OtomeKoe 在线音频。 */
+    val otomeKoeStreamUrl: String? = null
 ) {
     fun getAllLocalPaths(): List<String> {
         val roots = mutableListOf<String>()

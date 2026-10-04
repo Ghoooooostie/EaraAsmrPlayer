@@ -390,6 +390,7 @@ private fun SearchScreenContent(
     var presaleOnly by rememberSaveable { mutableStateOf(false) }
     var chineseTranslatedOnly by rememberSaveable { mutableStateOf(false) }
     var collectedOnly by rememberSaveable { mutableStateOf(true) }
+    var otomeKoeOnly by rememberSaveable { mutableStateOf(false) }
     var hasSubtitle by rememberSaveable { mutableStateOf(false) }
     var allAges by rememberSaveable { mutableStateOf(false) }
     var selectedCollectedSortName by rememberSaveable { mutableStateOf(SearchCollectedSortOption.ReleaseNew.name) }
@@ -401,12 +402,13 @@ private fun SearchScreenContent(
     val selectedCollectedSort = remember(selectedCollectedSortName) {
         SearchCollectedSortOption.fromName(selectedCollectedSortName)
     }
-    val selectedFilter = remember(purchasedOnly, presaleOnly, chineseTranslatedOnly, collectedOnly) {
+    val selectedFilter = remember(purchasedOnly, presaleOnly, chineseTranslatedOnly, collectedOnly, otomeKoeOnly) {
         SearchFilterOption.fromState(
             purchasedOnly = purchasedOnly,
             presaleOnly = presaleOnly,
             chineseTranslatedOnly = chineseTranslatedOnly,
-            collectedOnly = collectedOnly
+            collectedOnly = collectedOnly,
+            otomeKoeOnly = otomeKoeOnly
         )
     }
     val viewMode by viewModel.viewMode.collectAsStateWhileActive(isDataActive)
@@ -448,7 +450,8 @@ private fun SearchScreenContent(
             initialCollectedOnly = collectedOnly,
             initialCollectedSort = selectedCollectedSort,
             initialHasSubtitle = hasSubtitle,
-            initialAllAges = allAges
+            initialAllAges = allAges,
+            initialOtomeKoeOnly = otomeKoeOnly
         )
     }
 
@@ -482,6 +485,7 @@ private fun SearchScreenContent(
             presaleOnly = state.presaleOnly
             chineseTranslatedOnly = state.chineseTranslatedOnly
             collectedOnly = state.collectedOnly
+            otomeKoeOnly = state.otomeKoeOnly
             hasSubtitle = state.hasSubtitle
             allAges = state.allAges
             selectedCollectedSortName = state.collectedSort.name
@@ -558,6 +562,7 @@ private fun SearchScreenContent(
             presaleOnly = presaleOnly,
             chineseTranslatedOnly = chineseTranslatedOnly,
             collectedOnly = collectedOnly,
+            otomeKoeOnly = otomeKoeOnly,
             hasSubtitle = hasSubtitle,
             allAges = allAges,
             locale = selectedLocale
@@ -619,6 +624,7 @@ private fun SearchScreenContent(
             presaleOnly = submittedSearchPresaleOnly,
             chineseTranslatedOnly = submittedSearchChineseTranslatedOnly,
             collectedOnly = submittedSearchCollectedOnly,
+            otomeKoeOnly = false,
             hasSubtitle = submittedSearchHasSubtitle,
             allAges = submittedSearchAllAges,
             locale = submittedSearchLocale
@@ -632,6 +638,7 @@ private fun SearchScreenContent(
         presaleOnly = submittedSearchPresaleOnly
         chineseTranslatedOnly = submittedSearchChineseTranslatedOnly
         collectedOnly = submittedSearchCollectedOnly
+        otomeKoeOnly = false
         hasSubtitle = submittedSearchHasSubtitle
         allAges = submittedSearchAllAges
         selectedLocale = submittedSearchLocale
@@ -1171,6 +1178,7 @@ private fun SearchScreenContent(
                                             val hasResolvedDetail = rj.isNotBlank() && rj in state.enrichedDetailRjCodes
                                             AlbumItem(
                                                 album = album,
+                                                onAlbumDownload = { viewModel.downloadOtomeKoeAudio(it) },
                                                 onClick = { onAlbumClick(album, state.purchasedOnly, hasResolvedDetail) },
                                                 modifier = Modifier.animateItem(
                                                     fadeInSpec = null,
@@ -1252,6 +1260,7 @@ private fun SearchScreenContent(
                                             val hasResolvedDetail = rj.isNotBlank() && rj in state.enrichedDetailRjCodes
                                             AlbumGridItem(
                                                 album = album,
+                                                onAlbumDownload = { viewModel.downloadOtomeKoeAudio(it) },
                                                 onClick = { onAlbumClick(album, state.purchasedOnly, hasResolvedDetail) },
                                                 modifier = Modifier.animateItem(
                                                     fadeInSpec = null,
@@ -1384,6 +1393,7 @@ private fun SearchScreenContent(
                                 presaleOnly = option.isPresaleOnly,
                                 chineseTranslatedOnly = option.isChineseTranslated,
                                 collectedOnly = option.isCollectedOnly,
+                                otomeKoeOnly = option.isOtomeKoeOnly,
                                 hasSubtitle = options.hasSubtitle,
                                 allAges = options.allAges,
                                 locale = options.locale
@@ -1393,6 +1403,7 @@ private fun SearchScreenContent(
                                 presaleOnly = option.isPresaleOnly
                                 chineseTranslatedOnly = option.isChineseTranslated
                                 collectedOnly = option.isCollectedOnly
+                                otomeKoeOnly = option.isOtomeKoeOnly
                                 selectedOrderName = options.order.name
                                 selectedCollectedSortName = options.collectedSort.name
                                 hasSubtitle = options.hasSubtitle
