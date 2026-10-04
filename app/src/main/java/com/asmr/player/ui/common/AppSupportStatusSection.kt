@@ -47,6 +47,7 @@ fun SiteStatusSection(
     val dlsite by viewModel.dlsite.collectAsStateWithLifecycle()
     val asmr by viewModel.asmr.collectAsStateWithLifecycle()
     val site by viewModel.asmrOneSite.collectAsStateWithLifecycle()
+    val otomeKoe by viewModel.otomeKoe.collectAsStateWithLifecycle()
 
     Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(10.dp)) {
         Text(
@@ -69,6 +70,11 @@ fun SiteStatusSection(
                     lightweight = true
                 )
             }
+        )
+        SiteStatusTestRow(
+            name = "otomekoe",
+            status = otomeKoe,
+            onTest = viewModel::testOtomeKoe
         )
     }
 }

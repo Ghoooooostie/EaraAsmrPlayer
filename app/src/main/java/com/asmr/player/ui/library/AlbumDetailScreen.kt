@@ -1044,6 +1044,7 @@ fun AlbumDetailScreen(
                                 album = headerAlbum,
                                 dlsiteUrl = model.dlsiteWorkno.takeIf { it.isNotBlank() }?.let { "$DLSITE_DOMAIN${storeSegment()}/work/=/product_id/$it.html" }.orEmpty(),
                                 asmrOneUrl = model.asmrOneWorkId?.takeIf { it.isNotBlank() }?.let { "https://asmr.one/work/$it" }.orEmpty(),
+                                otomeKoeUrl = model.rjCode.takeIf { it.isNotBlank() }?.let { "https://otomekoe.moe/search/$it/" }.orEmpty(),
                                 dlsiteEditions = headerDlsiteEditions,
                                 dlsiteSelectedLang = model.dlsiteSelectedLang,
                                 onDlsiteLangSelected = { viewModel.selectDlsiteLanguage(it) },
@@ -3234,6 +3235,7 @@ private fun AlbumHeader(
     album: Album,
     dlsiteUrl: String,
     asmrOneUrl: String,
+    otomeKoeUrl: String,
     dlsiteEditions: List<DlsiteLanguageEdition>,
     dlsiteSelectedLang: String,
     onDlsiteLangSelected: (String) -> Unit,
@@ -3333,6 +3335,7 @@ private fun AlbumHeader(
             onDlsiteLangSelected = onDlsiteLangSelected,
             dlsiteUrl = dlsiteUrl,
             asmrOneUrl = asmrOneUrl,
+            otomeKoeUrl = otomeKoeUrl,
             availableWidth = availableWidth,
             floating = landscapeFloatingActions,
         )
@@ -3356,6 +3359,7 @@ private fun AlbumHeaderActionBar(
     onDlsiteLangSelected: (String) -> Unit,
     dlsiteUrl: String,
     asmrOneUrl: String,
+    otomeKoeUrl: String,
     availableWidth: Dp,
     floating: Boolean = false,
 ) {
@@ -3585,6 +3589,29 @@ private fun AlbumHeaderActionBar(
                             .widthIn(min = 66.dp)
                             .fillMaxHeight(),
                     )
+
+                    VerticalDivider(
+                        modifier = Modifier.height(16.dp),
+                        thickness = 0.5.dp,
+                        color = borderColor,
+                    )
+                    AlbumHeaderBarAction(
+                        label = "OtomeKoe",
+                        showLabel = true,
+                        enabled = otomeKoeUrl.isNotBlank(),
+                        onClick = {
+                            if (otomeKoeUrl.isNotBlank()) {
+                                context.startActivity(
+                                    Intent(Intent.ACTION_VIEW, Uri.parse(otomeKoeUrl))
+                                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                )
+                            }
+                        },
+                        shape = floatingSegmentShape,
+                        modifier = Modifier
+                            .widthIn(min = 88.dp)
+                            .fillMaxHeight(),
+                    )
                 }
             }
         }
@@ -3700,6 +3727,7 @@ private fun AlbumHeaderActionBar(
             listOf(
                 Triple("DLsite", dlsiteUrl, 64.dp),
                 Triple("ONE", asmrOneUrl, if (compact) 44.dp else 56.dp),
+                Triple("OtomeKoe", otomeKoeUrl, if (compact) 64.dp else 76.dp),
             ).forEach { (label, url, width) ->
                 AlbumHeaderBarAction(
                     label = label,

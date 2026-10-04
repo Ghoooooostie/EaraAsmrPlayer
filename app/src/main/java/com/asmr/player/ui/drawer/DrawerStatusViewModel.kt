@@ -46,6 +46,9 @@ class DrawerStatusViewModel @Inject constructor(
     val asmr: StateFlow<SiteStatus> = _asmr
     private var asmrTestJob: Job? = null
 
+    private val _otomeKoe = MutableStateFlow(SiteStatus())
+    val otomeKoe: StateFlow<SiteStatus> = _otomeKoe
+
     fun testDlsite() {
         viewModelScope.launch(Dispatchers.IO) {
             _dlsite.value = SiteStatus(type = SiteStatusType.Testing)
@@ -73,6 +76,14 @@ class DrawerStatusViewModel @Inject constructor(
             if (latency == null) {
                 messageManager.showError(ASMR_ONE_SITE_TEST_FAILURE_MESSAGE)
             }
+        }
+    }
+
+    fun testOtomeKoe() {
+        viewModelScope.launch(Dispatchers.IO) {
+            _otomeKoe.value = SiteStatus(type = SiteStatusType.Testing)
+            val latency = measure("https://otomekoe.moe/")
+            _otomeKoe.value = latency.toStatus()
         }
     }
 
