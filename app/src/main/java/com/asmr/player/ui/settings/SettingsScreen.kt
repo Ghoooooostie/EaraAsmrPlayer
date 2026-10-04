@@ -288,10 +288,14 @@ fun SettingsScreen(
     var customAiApiUrlInput by remember { mutableStateOf("") }
     var customAiApiModelInput by remember { mutableStateOf("") }
     var customAiApiKeyInput by remember { mutableStateOf("") }
-    LaunchedEffect(customAiApiEndpointState.saveVersion) {
-        if (customAiApiEndpointState.saveVersion > 0L) {
-            customAiApiUrlInput = ""
-            customAiApiModelInput = ""
+    // 预设切换/配置变化时，把「当前生效值」回填进输入框：预设内置的端点与模型会直接显示出来，
+    // 用户只需补 API Key；保存后也不再清空，避免看起来像没保存而重复填写。
+    LaunchedEffect(customAiSelectedPreset, customAiApiSettings.apiUrl, customAiApiSettings.model) {
+        if (customAiApiUrlInput.isBlank() && customAiApiSettings.apiUrl.isNotBlank()) {
+            customAiApiUrlInput = customAiApiSettings.apiUrl
+        }
+        if (customAiApiModelInput.isBlank() && customAiApiSettings.model.isNotBlank()) {
+            customAiApiModelInput = customAiApiSettings.model
         }
     }
     LaunchedEffect(customAiApiKeyState.saveVersion) {
@@ -1129,39 +1133,11 @@ fun SettingsScreen(
                             horizontalArrangement = Arrangement.spacedBy(12.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            FilledTonalButton(
-                                onClick = {
-                                    viewModel.testTranslationApi(
-                                        customUrlInput = customAiApiUrlInput,
-                                        customModelInput = customAiApiModelInput,
-                                        customKeyInput = customAiApiKeyInput
-                                    )
-                                },
-                                enabled = !translationApiTestState.running,
-                                modifier = Modifier
-                                    .height(40.dp)
-                                    .testTag("translation_api_test_action"),
-                                colors = settingsPrimaryTonalButtonColors(),
-                                shape = RoundedCornerShape(14.dp)
-                            ) {
-                                if (translationApiTestState.running) {
-                                    EaraLogoLoadingIndicator(size = 16.dp)
-                                } else {
-                                    Text("测试连通性")
-                                }
-                            }
-                            translationApiTestState.resultMessage?.let { message ->
-                                Text(
-                                    text = message,
-                                    style = MaterialTheme.typography.labelMedium,
-                                    color = if (translationApiTestState.success) {
-                                        MaterialTheme.colorScheme.primary
-                                    } else {
-                                        MaterialTheme.colorScheme.error
-                                    },
-                                    modifier = Modifier.testTag("translation_api_test_result")
-                                )
-                            }
+                            Text(
+                                text = "连通性与配置在下方对应卡片中测试、保存。",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = colorScheme.textSecondary
+                            )
                         }
                         if (customAiApiSettings.enabled) {
                             CustomAiApiSettingsSection(
@@ -1172,17 +1148,29 @@ fun SettingsScreen(
                                 modelInput = customAiApiModelInput,
                                 apiKeyInput = customAiApiKeyInput,
                                 finalPolishEnabled = deepSeekTranslationSettings.finalPolishEnabled,
-                                compact = isCompact,
                                 modelsLoading = customAiApiModelsState.loading,
                                 models = customAiApiModelsState.models,
                                 modelsError = customAiApiModelsState.error,
                                 onUrlInputChanged = { customAiApiUrlInput = it },
                                 onModelInputChanged = { customAiApiModelInput = it },
                                 onApiKeyInputChanged = { customAiApiKeyInput = it },
-                                onSaveEndpoint = {
-                                    viewModel.saveCustomAiApiEndpoint(customAiApiUrlInput, customAiApiModelInput)
+                                onSaveAll = {
+                                    viewModel.saveCustomAiApiSettings(
+                                        urlInput = customAiApiUrlInput,
+                                        modelInput = customAiApiModelInput,
+                                        apiKeyInput = customAiApiKeyInput
+                                    )
                                 },
-                                onSaveApiKey = { viewModel.saveCustomAiApiKey(customAiApiKeyInput) },
+                                onTestConnection = {
+                                    viewModel.testTranslationApi(
+                                        customUrlInput = customAiApiUrlInput,
+                                        customModelInput = customAiApiModelInput,
+                                        customKeyInput = customAiApiKeyInput
+                                    )
+                                },
+                                testRunning = translationApiTestState.running,
+                                testResultMessage = translationApiTestState.resultMessage,
+                                testSuccess = translationApiTestState.success,
                                 onRefreshModels = {
                                     viewModel.refreshCustomAiApiModels(
                                         urlInput = customAiApiUrlInput,
@@ -1193,8 +1181,9 @@ fun SettingsScreen(
                                 onPresetSelected = { presetId ->
                                     settingsScreenScope.launch {
                                         val profile = viewModel.selectAndLoadCustomAiPreset(presetId)
-                                        customAiApiUrlInput = profile.apiUrl
-                                        customAiApiModelInput = profile.model
+                                        val meta = CUSTOM_AI_ENDPOINT_PRESETS.firstOrNull { it.id == presetId }
+                                        customAiApiUrlInput = profile.apiUrl.ifBlank { meta?.url.orEmpty() }
+                                        customAiApiModelInput = profile.model.ifBlank { meta?.defaultModel.orEmpty() }
                                     }
                                 },
                                 onSendDeepSeekParamsChanged = viewModel::setCustomAiSendDeepSeekParams,
@@ -1212,6 +1201,10 @@ fun SettingsScreen(
                                 segmentedButtonColors = segmentedButtonColors,
                                 onApiKeyInputChanged = { deepSeekApiKeyInput = it },
                                 onSave = { viewModel.saveDeepSeekApiKey(deepSeekApiKeyInput) },
+                                onTestConnection = { viewModel.testTranslationApi() },
+                                testRunning = translationApiTestState.running,
+                                testResultMessage = translationApiTestState.resultMessage,
+                                testSuccess = translationApiTestState.success,
                                 onThinkingEnabledChanged = viewModel::setDeepSeekThinkingEnabled,
                                 onReasoningEffortChanged = viewModel::setDeepSeekReasoningEffort,
                                 onFinalPolishEnabledChanged = viewModel::setDeepSeekFinalPolishEnabled,
@@ -1566,6 +1559,10 @@ internal fun DeepSeekTranslationSettingsSection(
     segmentedButtonColors: SegmentedButtonColors,
     onApiKeyInputChanged: (String) -> Unit,
     onSave: () -> Unit,
+    onTestConnection: () -> Unit,
+    testRunning: Boolean,
+    testResultMessage: String?,
+    testSuccess: Boolean,
     onThinkingEnabledChanged: (Boolean) -> Unit,
     onReasoningEffortChanged: (DeepSeekReasoningEffort) -> Unit,
     onFinalPolishEnabledChanged: (Boolean) -> Unit,
@@ -1672,6 +1669,39 @@ internal fun DeepSeekTranslationSettingsSection(
             color = MaterialTheme.colorScheme.error
         )
     }
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        FilledTonalButton(
+            onClick = onTestConnection,
+            enabled = !testRunning && !state.saving,
+            modifier = Modifier
+                .height(48.dp)
+                .testTag("translation_api_test_action"),
+            colors = actionButtonColors,
+            shape = RoundedCornerShape(14.dp)
+        ) {
+            if (testRunning) {
+                EaraLogoLoadingIndicator(size = 18.dp)
+            } else {
+                Text("测试连通性")
+            }
+        }
+        testResultMessage?.let { message ->
+            Text(
+                text = message,
+                style = MaterialTheme.typography.labelMedium,
+                color = if (testSuccess) {
+                    MaterialTheme.colorScheme.primary
+                } else {
+                    MaterialTheme.colorScheme.error
+                },
+                modifier = Modifier.testTag("translation_api_test_result")
+            )
+        }
+    }
 
     SettingsToggleRow(
         text = "思考模式",
@@ -1745,15 +1775,17 @@ internal fun CustomAiApiSettingsSection(
     modelInput: String,
     apiKeyInput: String,
     finalPolishEnabled: Boolean,
-    compact: Boolean,
     modelsLoading: Boolean,
     models: List<String>,
     modelsError: String?,
     onUrlInputChanged: (String) -> Unit,
     onModelInputChanged: (String) -> Unit,
     onApiKeyInputChanged: (String) -> Unit,
-    onSaveEndpoint: () -> Unit,
-    onSaveApiKey: () -> Unit,
+    onSaveAll: () -> Unit,
+    onTestConnection: () -> Unit,
+    testRunning: Boolean,
+    testResultMessage: String?,
+    testSuccess: Boolean,
     onRefreshModels: () -> Unit,
     selectedPreset: String,
     onPresetSelected: (String) -> Unit,
@@ -1764,10 +1796,12 @@ internal fun CustomAiApiSettingsSection(
 ) {
     val colorScheme = AsmrTheme.colorScheme
     val actionButtonColors = settingsPrimaryTonalButtonColors()
-    // weight 只能在 RowScope 内解析;延迟到各 Row 内部再计算宽度修饰符。
-    val inputWidthModifier: @Composable androidx.compose.foundation.layout.RowScope.() -> Modifier = {
-        if (compact) Modifier.weight(1f) else Modifier.widthIn(max = 320.dp)
-    }
+    val busy = endpointState.saving || keyState.saving
+    val presetMeta = CUSTOM_AI_ENDPOINT_PRESETS.firstOrNull { it.id == selectedPreset }
+    // 「使用预设内置值」= 输入框内容与预设内置的 url/模型完全一致（尚未单独保存过）。
+    val usingPresetDefaults = presetMeta != null &&
+        urlInput.trim() == presetMeta.url &&
+        modelInput.trim() == presetMeta.defaultModel
 
     Text(
         text = "兼容 OpenAI chat/completions 协议；模型需支持工具调用（function calling）。",
@@ -1797,67 +1831,121 @@ internal fun CustomAiApiSettingsSection(
             }
         }
     }
+    // 端点、模型、Key 各占整行：窄屏下平分宽度会把长 URL/模型名截断，反而看不清填了什么。
+    OutlinedTextField(
+        value = urlInput,
+        onValueChange = onUrlInputChanged,
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("custom_ai_api_url_input"),
+        label = { Text("端点地址") },
+        singleLine = true,
+        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
+        enabled = !busy
+    )
+    OutlinedTextField(
+        value = modelInput,
+        onValueChange = onModelInputChanged,
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("custom_ai_api_model_input"),
+        label = { Text("模型名") },
+        supportingText = {
+            Text(
+                text = "不确定填什么？点下方「刷新模型列表」从服务端拉取后点选",
+                style = MaterialTheme.typography.labelSmall
+            )
+        },
+        singleLine = true,
+        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Ascii),
+        enabled = !busy
+    )
+    OutlinedTextField(
+        value = apiKeyInput,
+        onValueChange = onApiKeyInputChanged,
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("custom_ai_api_key_input"),
+        label = { Text(if (keyState.configured) "API Key（留空则保持原值）" else "API Key") },
+        supportingText = {
+            Text(
+                text = "在服务商控制台复制，通常以 sk- 开头；不要带引号、空格或换行",
+                style = MaterialTheme.typography.labelSmall
+            )
+        },
+        singleLine = true,
+        visualTransformation = PasswordVisualTransformation(),
+        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+        enabled = !busy,
+        isError = keyState.errorMessage != null
+    )
     Row(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        OutlinedTextField(
-            value = urlInput,
-            onValueChange = onUrlInputChanged,
-            modifier = inputWidthModifier()
-                .heightIn(min = 56.dp)
-                .testTag("custom_ai_api_url_input"),
-            placeholder = {
-                Text(
-                    text = settings.apiUrl.ifBlank { "端点地址（…/chat/completions）" },
-                    style = MaterialTheme.typography.bodyLarge
-                )
-            },
-            singleLine = true,
-            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
-            enabled = !endpointState.saving
-        )
-    }
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        OutlinedTextField(
-            value = modelInput,
-            onValueChange = onModelInputChanged,
-            modifier = inputWidthModifier()
-                .heightIn(min = 56.dp)
-                .testTag("custom_ai_api_model_input"),
-            placeholder = {
-                Text(
-                    text = settings.model.ifBlank { "模型名（如 gpt-4o-mini）" },
-                    style = MaterialTheme.typography.bodyLarge
-                )
-            },
-            singleLine = true,
-            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Ascii),
-            enabled = !endpointState.saving,
-            isError = endpointState.errorMessage != null
-        )
         FilledTonalButton(
-            onClick = onSaveEndpoint,
-            enabled = urlInput.isNotBlank() && modelInput.isNotBlank() && !endpointState.saving,
+            onClick = onSaveAll,
+            enabled = urlInput.isNotBlank() && modelInput.isNotBlank() && !busy,
             modifier = Modifier
                 .height(48.dp)
                 .testTag("custom_ai_api_endpoint_action"),
             colors = actionButtonColors,
             shape = RoundedCornerShape(14.dp)
         ) {
-            if (endpointState.saving) {
+            if (busy) {
                 EaraLogoLoadingIndicator(size = 18.dp)
             } else {
-                Text(if (endpointState.configured) "更新" else "保存")
+                Text("保存全部")
+            }
+        }
+        FilledTonalButton(
+            onClick = onTestConnection,
+            enabled = !testRunning && !busy,
+            modifier = Modifier
+                .height(48.dp)
+                .testTag("translation_api_test_action"),
+            colors = actionButtonColors,
+            shape = RoundedCornerShape(14.dp)
+        ) {
+            if (testRunning) {
+                EaraLogoLoadingIndicator(size = 18.dp)
+            } else {
+                Text("测试连通性")
             }
         }
     }
+    // 状态行：一眼看清端点来源与 Key 是否已配置，不用靠猜输入框里有没有值。
+    Text(
+        text = buildString {
+            append(if (usingPresetDefaults) "端点：使用预设内置值" else "端点：已自定义并保存")
+            append(" · ")
+            append(if (keyState.configured) "API Key：已配置" else "API Key：未配置")
+        },
+        style = MaterialTheme.typography.labelSmall,
+        color = colorScheme.textSecondary,
+        modifier = Modifier.testTag("custom_ai_config_summary")
+    )
+    testResultMessage?.let { message ->
+        Text(
+            text = message,
+            style = MaterialTheme.typography.labelMedium,
+            color = if (testSuccess) {
+                MaterialTheme.colorScheme.primary
+            } else {
+                MaterialTheme.colorScheme.error
+            },
+            modifier = Modifier.testTag("translation_api_test_result")
+        )
+    }
     endpointState.errorMessage?.let { message ->
+        Text(
+            text = message,
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.error
+        )
+    }
+    keyState.errorMessage?.let { message ->
         Text(
             text = message,
             style = MaterialTheme.typography.labelSmall,
@@ -1916,53 +2004,6 @@ internal fun CustomAiApiSettingsSection(
             }
         }
     }
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        OutlinedTextField(
-            value = apiKeyInput,
-            onValueChange = onApiKeyInputChanged,
-            modifier = inputWidthModifier()
-                .heightIn(min = 56.dp)
-                .testTag("custom_ai_api_key_input"),
-            placeholder = {
-                Text(
-                    text = "API Key",
-                    style = MaterialTheme.typography.bodyLarge
-                )
-            },
-            singleLine = true,
-            visualTransformation = PasswordVisualTransformation(),
-            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
-            enabled = !keyState.saving,
-            isError = keyState.errorMessage != null
-        )
-        FilledTonalButton(
-            onClick = onSaveApiKey,
-            enabled = apiKeyInput.isNotBlank() && !keyState.saving,
-            modifier = Modifier
-                .height(48.dp)
-                .testTag("custom_ai_api_key_action"),
-            colors = actionButtonColors,
-            shape = RoundedCornerShape(14.dp)
-        ) {
-            if (keyState.saving) {
-                EaraLogoLoadingIndicator(size = 18.dp)
-            } else {
-                Text(if (keyState.configured) "替换" else "保存")
-            }
-        }
-    }
-    keyState.errorMessage?.let { message ->
-        Text(
-            text = message,
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.error
-        )
-    }
-
     SettingsToggleRow(
         text = "发送 DeepSeek 专属参数",
         checked = settings.sendDeepSeekParams,

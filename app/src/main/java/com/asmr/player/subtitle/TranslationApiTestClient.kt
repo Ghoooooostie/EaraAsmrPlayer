@@ -2,6 +2,7 @@ package com.asmr.player.subtitle
 
 import com.asmr.player.data.settings.CustomAiApiSettings
 import com.asmr.player.data.settings.normalizeCustomAiApiUrl
+import com.asmr.player.data.settings.sanitizeApiKeyInput
 import com.google.gson.Gson
 import com.google.gson.JsonParser
 import java.io.IOException
@@ -79,7 +80,16 @@ internal fun classifyTranslationApiTestResponse(
     }
     val serviceMessage = parseDeepSeekErrorMessage(rawBody)
     val reason = when (statusCode) {
-        401, 403 -> "API Key 无效或无权限（HTTP $statusCode）"
+        401, 403 -> buildString {
+            append("API Key 无效或无权限（HTTP $statusCode）")
+            // 服务端只说 "Token is invalid" 时，用户很难判断是自己复制错了还是填错了平台。
+            if (serviceMessage?.contains("token", ignoreCase = true) == true ||
+                serviceMessage?.contains("key", ignoreCase = true) == true
+            ) {
+                append("：请确认复制的是该服务商控制台里的 API 密钥（通常以 sk- 开头），")
+                append("不要用账号密码、其他平台的 Key，也不要带引号或换行")
+            }
+        }
         404 -> "端点地址或模型名不存在（HTTP 404），请检查 URL 与模型名"
         429 -> "触发速率限制（HTTP 429），请稍后重试"
         else -> "服务返回 HTTP $statusCode"
@@ -101,12 +111,17 @@ internal suspend fun runTranslationApiTest(
         .readTimeout(60, TimeUnit.SECONDS)
         .callTimeout(60, TimeUnit.SECONDS)
         .build()
-    val request = Request.Builder()
-        .url(apiUrl)
-        .header("Authorization", "Bearer ${apiKey.trim()}")
-        .post(buildTranslationApiTestRequestJson(gson, model).toRequestBody(JSON_MEDIA_TYPE))
-        .build()
+    val sanitizedKey = sanitizeApiKeyInput(apiKey)
+    if (sanitizedKey.isEmpty()) {
+        return@withContext TranslationApiTestOutcome.Failure("API Key 为空，请先填写并保存")
+    }
     try {
+        // 请求构造也放进 try：header 校验失败等 IllegalArgumentException 同样不能把 App 打崩。
+        val request = Request.Builder()
+            .url(apiUrl)
+            .header("Authorization", "Bearer $sanitizedKey")
+            .post(buildTranslationApiTestRequestJson(gson, model).toRequestBody(JSON_MEDIA_TYPE))
+            .build()
         client.newCall(request).execute().use { response ->
             classifyTranslationApiTestResponse(response.code, response.body?.string().orEmpty())
         }
@@ -114,6 +129,8 @@ internal suspend fun runTranslationApiTest(
         TranslationApiTestOutcome.Failure(
             "网络请求失败：${error.message ?: error.javaClass.simpleName}"
         )
+    } catch (error: IllegalArgumentException) {
+        TranslationApiTestOutcome.Failure("请求参数非法：${error.message ?: "地址或 API Key 含非法字符"}")
     }
 }
 

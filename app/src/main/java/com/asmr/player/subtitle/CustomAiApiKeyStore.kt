@@ -5,6 +5,7 @@ import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import android.util.Base64
 import com.asmr.player.data.settings.customAiDefaultPresetId
+import com.asmr.player.data.settings.sanitizeApiKeyInput
 import java.security.KeyStore
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
@@ -26,21 +27,22 @@ internal class CustomAiApiKeyStore private constructor(context: Context) {
         val encrypted = preferences.getString(encryptedValueKey(presetId), null)
         if (encrypted != null) {
             val iv = preferences.getString(ivKey(presetId), null) ?: return@synchronized ""
-            return@synchronized decrypt(encrypted, iv) ?: ""
+            // 读取时也清洗：修复历史上粘贴时带进换行的脏 Key，避免拼 header 时崩。
+            return@synchronized decrypt(encrypted, iv)?.let(::sanitizeApiKeyInput).orEmpty()
         }
         // 兼容旧版：默认预设首次读取回退到旧的共用密钥。
         if (presetId == customAiDefaultPresetId()) {
             val legacy = preferences.getString(KEY_ENCRYPTED_VALUE, null)
             val legacyIv = preferences.getString(KEY_INITIALIZATION_VECTOR, null)
             if (legacy != null && legacyIv != null) {
-                return@synchronized decrypt(legacy, legacyIv) ?: ""
+                return@synchronized decrypt(legacy, legacyIv)?.let(::sanitizeApiKeyInput).orEmpty()
             }
         }
         ""
     }
 
     fun save(presetId: String = customAiDefaultPresetId(), apiKey: String) = synchronized(lock) {
-        val normalized = apiKey.trim()
+        val normalized = sanitizeApiKeyInput(apiKey)
         if (normalized.isEmpty()) {
             clearStoredValue(presetId)
             return@synchronized

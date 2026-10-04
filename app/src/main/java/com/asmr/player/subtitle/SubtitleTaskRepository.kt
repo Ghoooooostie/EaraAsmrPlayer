@@ -14,6 +14,7 @@ import com.asmr.player.data.local.db.entities.SubtitleTaskSnapshotEntity
 import com.asmr.player.data.local.db.entities.SubtitleTitleOwnerEntity
 import com.asmr.player.data.local.db.entities.SubtitleTitleOwnerKind
 import com.asmr.player.data.local.db.entities.SubtitleTranslationSourceEntity
+import com.asmr.player.data.settings.CUSTOM_AI_ENDPOINT_PRESETS
 import com.asmr.player.data.settings.CustomAiApiSettings
 import com.asmr.player.data.settings.SettingsKeys
 import com.asmr.player.data.settings.customAiDefaultPresetId
@@ -106,12 +107,16 @@ internal class SubtitleTaskRepository private constructor(context: Context) {
         val prefs = appContext.settingsDataStore.data.first()
         val selected = prefs[SettingsKeys.CUSTOM_AI_SELECTED_PRESET] ?: customAiDefaultPresetId()
         val isDefault = selected == customAiDefaultPresetId()
+        // 与 SettingsRepository.readPresetProfile 保持同一回退链：预设已保存值 →（默认预设）旧版共用字段 → 预设内置默认值。
+        val preset = CUSTOM_AI_ENDPOINT_PRESETS.firstOrNull { it.id == selected }
         val customSettings = CustomAiApiSettings(
             enabled = prefs[SettingsKeys.CUSTOM_AI_API_ENABLED] ?: false,
-            apiUrl = prefs[SettingsKeys.customAiPresetUrlKey(selected)]
-                .takeIf { !it.isNullOrBlank() } ?: if (isDefault) prefs[SettingsKeys.CUSTOM_AI_API_URL] ?: "" else "",
-            model = prefs[SettingsKeys.customAiPresetModelKey(selected)]
-                .takeIf { !it.isNullOrBlank() } ?: if (isDefault) prefs[SettingsKeys.CUSTOM_AI_API_MODEL] ?: "" else "",
+            apiUrl = prefs[SettingsKeys.customAiPresetUrlKey(selected)]?.takeIf { it.isNotBlank() }
+                ?: (if (isDefault) prefs[SettingsKeys.CUSTOM_AI_API_URL]?.takeIf { it.isNotBlank() } else null)
+                ?: preset?.url.orEmpty(),
+            model = prefs[SettingsKeys.customAiPresetModelKey(selected)]?.takeIf { it.isNotBlank() }
+                ?: (if (isDefault) prefs[SettingsKeys.CUSTOM_AI_API_MODEL]?.takeIf { it.isNotBlank() } else null)
+                ?: preset?.defaultModel.orEmpty(),
             sendDeepSeekParams = prefs[SettingsKeys.customAiPresetDeepSeekParamsKey(selected)]
                 ?: if (isDefault) prefs[SettingsKeys.CUSTOM_AI_SEND_DEEPSEEK_PARAMS] ?: false else false
         )

@@ -30,6 +30,16 @@ val CUSTOM_AI_ENDPOINT_PRESETS: List<CustomAiPresetMeta> = listOf(
         defaultModel = "openai/gpt-oss-120b"
     ),
     CustomAiPresetMeta(
+        id = "SiliconFlow",
+        label = "硅基流动",
+        // OpenAI 兼容端点，国内直连/人民币充值，无需代理。
+        // 注意：模型需在控制台「模型市场」勾选支持 Function Calling（翻译 agent 依赖 tools）。
+        // 2026-10 官方示例的模型 ID 带 `Pro/` 前缀（如 Pro/deepseek-ai/DeepSeek-R1）；
+        // 若不确定当前可用 ID，点设置里的「刷新模型列表」从 /v1/models 拉取后点选即可。
+        url = "https://api.siliconflow.cn/v1/chat/completions",
+        defaultModel = "Pro/deepseek-ai/DeepSeek-V3.2"
+    ),
+    CustomAiPresetMeta(
         id = "GoogleGemini",
         label = "Google Gemini",
         url = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
@@ -39,6 +49,26 @@ val CUSTOM_AI_ENDPOINT_PRESETS: List<CustomAiPresetMeta> = listOf(
 )
 
 fun customAiDefaultPresetId(): String = CUSTOM_AI_ENDPOINT_PRESETS.first().id
+
+/**
+ * 清洗 API Key 输入：
+ * - 去掉首尾空白以及**所有**空白字符（含粘贴时带进来的换行/空格/制表符）；
+ * - 去掉复制时可能带上的引号（中英文）与 `Bearer ` 前缀。
+ *
+ * 真实事故：用户从网页控制台复制 Key 时粘进了换行，OkHttp 构造 `Authorization` 头时抛
+ * `IllegalArgumentException: Unexpected char 0x0a ... in Authorization value`，
+ * 而该异常发生在协程里未捕获 → 整个 App 闪退；带引号则会被服务端判为 Token 无效（401）。
+ * Key 在入库、拼 header 前都要过这里。
+ */
+internal fun sanitizeApiKeyInput(raw: String): String {
+    val withoutPrefix = raw.trim()
+        .removePrefix("Bearer ")
+        .removePrefix("bearer ")
+        .removePrefix("BEARER ")
+    return withoutPrefix.filterNot { ch ->
+        ch.isWhitespace() || ch == '"' || ch == '\'' || ch == '“' || ch == '”' || ch == '‘' || ch == '’'
+    }
+}
 
 private val LoopbackApiHosts = setOf("localhost", "127.0.0.1", "::1")
 

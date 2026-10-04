@@ -4,6 +4,7 @@ import android.content.Context
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import android.util.Base64
+import com.asmr.player.data.settings.sanitizeApiKeyInput
 import java.security.KeyStore
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
@@ -31,11 +32,11 @@ internal class DeepSeekApiKeyStore private constructor(context: Context) {
         }.getOrElse {
             clearStoredValue()
             ""
-        }
+        }.let(::sanitizeApiKeyInput) // 兼容历史脏数据：粘贴带进换行的 Key 会让 OkHttp 拼 header 时抛异常崩溃
     }
 
     fun save(apiKey: String) = synchronized(lock) {
-        val normalized = apiKey.trim()
+        val normalized = sanitizeApiKeyInput(apiKey)
         if (normalized.isEmpty()) {
             clearStoredValue()
             return@synchronized

@@ -1,6 +1,8 @@
 .idea/
 .vscode/
 .claude/
+.codebuddy/
+.zcode/
 .trae/
 *.iml
 .worktrees/
@@ -53,6 +55,12 @@ app/src/main/assets/models/*.bin
 *.log
 crash.txt
 *.hprof
+
+# 本地构建/测试/安装日志与一次性探针（不入库）
+/*_log*.txt
+/bf.txt
+/tools/tmp_*.py
+/tools/_*.diff
 
 Thumbs.db
 .DS_Store

@@ -301,22 +301,24 @@ class SettingsRepository private constructor(
                 ?: customAiDefaultPresetId()
         }
 
-    /** 读取某个预设独立保存的配置；默认预设首次为空时回退到旧版共用字段，兼容已有数据。 */
+    /**
+     * 读取某个预设独立保存的配置。取值回退链：**该预设已保存值 →（仅默认预设）旧版共用字段 → 预设内置默认值**。
+     * 最后一级回退保证「选了预设就能直接用」：URL/模型已内置在 [CUSTOM_AI_ENDPOINT_PRESETS] 里，
+     * 用户不必再手抄一遍，也不该看到空白输入框。
+     */
     private fun readPresetProfile(prefs: Preferences, presetId: String): CustomAiApiSettings {
         val isDefault = presetId == customAiDefaultPresetId()
-        val fallbackUrl = prefs[SettingsKeys.CUSTOM_AI_API_URL] ?: ""
-        val fallbackModel = prefs[SettingsKeys.CUSTOM_AI_API_MODEL] ?: ""
-        val fallbackParams = prefs[SettingsKeys.CUSTOM_AI_SEND_DEEPSEEK_PARAMS] ?: false
-        val apiUrl = prefs[SettingsKeys.customAiPresetUrlKey(presetId)]
-            .takeIf { !it.isNullOrBlank() } ?: if (isDefault) fallbackUrl else ""
-        val model = prefs[SettingsKeys.customAiPresetModelKey(presetId)]
-            .takeIf { !it.isNullOrBlank() } ?: if (isDefault) fallbackModel else ""
+        val preset = CUSTOM_AI_ENDPOINT_PRESETS.firstOrNull { it.id == presetId }
+        val savedUrl = prefs[SettingsKeys.customAiPresetUrlKey(presetId)]?.takeIf { it.isNotBlank() }
+            ?: if (isDefault) prefs[SettingsKeys.CUSTOM_AI_API_URL]?.takeIf { it.isNotBlank() } else null
+        val savedModel = prefs[SettingsKeys.customAiPresetModelKey(presetId)]?.takeIf { it.isNotBlank() }
+            ?: if (isDefault) prefs[SettingsKeys.CUSTOM_AI_API_MODEL]?.takeIf { it.isNotBlank() } else null
         val sendDeepSeekParams = prefs[SettingsKeys.customAiPresetDeepSeekParamsKey(presetId)]
-            ?: if (isDefault) fallbackParams else false
+            ?: if (isDefault) prefs[SettingsKeys.CUSTOM_AI_SEND_DEEPSEEK_PARAMS] ?: false else false
         return CustomAiApiSettings(
             enabled = prefs[SettingsKeys.CUSTOM_AI_API_ENABLED] ?: false,
-            apiUrl = apiUrl,
-            model = model,
+            apiUrl = savedUrl ?: preset?.url.orEmpty(),
+            model = savedModel ?: preset?.defaultModel.orEmpty(),
             sendDeepSeekParams = sendDeepSeekParams
         )
     }

@@ -29,6 +29,7 @@ import com.asmr.player.data.settings.NetworkRouteSettings
 import com.asmr.player.data.settings.NowPlayingLyricsSettings
 import com.asmr.player.data.settings.SettingsRepository
 import com.asmr.player.data.settings.normalizeCustomAiApiUrl
+import com.asmr.player.data.settings.sanitizeApiKeyInput
 import com.asmr.player.subtitle.SubtitleModelDownloadSource
 import com.asmr.player.subtitle.SubtitleModelRepository
 import com.asmr.player.subtitle.SubtitleModelState
@@ -488,7 +489,7 @@ class SettingsViewModel @Inject constructor(
     }
 
     internal fun saveDeepSeekApiKey(apiKey: String) {
-        val normalized = apiKey.trim()
+        val normalized = sanitizeApiKeyInput(apiKey)
         if (normalized.isEmpty()) return
         viewModelScope.launch(Dispatchers.IO) {
             _deepSeekApiKeyState.value = _deepSeekApiKeyState.value.copy(
@@ -588,14 +589,17 @@ class SettingsViewModel @Inject constructor(
     }
 
     internal fun saveCustomAiApiKey(apiKey: String) {
-        val normalized = apiKey.trim()
+        val normalized = sanitizeApiKeyInput(apiKey)
         if (normalized.isEmpty()) return
         viewModelScope.launch(Dispatchers.IO) {
             _customAiApiKeyState.value = _customAiApiKeyState.value.copy(
                 saving = true,
                 errorMessage = null
             )
-            val saved = runCatching { customAiApiKeyStore.save(apiKey = normalized) }.isSuccess
+            // 必须按「当前选中的预设」分桶保存：早前漏传 presetId 会把 Key 存进默认预设，
+            // 导致切到其它预设后永远读不到、测试连通性一直提示未保存。
+            val presetId = settingsRepository.loadSelectedCustomAiPresetId()
+            val saved = runCatching { customAiApiKeyStore.save(presetId = presetId, apiKey = normalized) }.isSuccess
             if (saved) {
                 val current = _customAiApiKeyState.value
                 _customAiApiKeyState.value = current.copy(
@@ -610,6 +614,56 @@ class SettingsViewModel @Inject constructor(
                     errorMessage = "API Key 保存失败"
                 )
             }
+        }
+    }
+
+    /**
+     * 「保存全部」：一次写入端点 + 模型 + API Key，避免用户在三个保存按钮之间来回点。
+     * [apiKeyInput] 留空表示沿用已保存的 Key（密码框不会回显，留空不应清空既有配置）。
+     */
+    internal fun saveCustomAiApiSettings(urlInput: String, modelInput: String, apiKeyInput: String) {
+        val normalizedUrl = normalizeCustomAiApiUrl(urlInput)
+        if (normalizedUrl == null) {
+            _customAiApiEndpointState.value = _customAiApiEndpointState.value.copy(
+                errorMessage = "端点需为以 /chat/completions 结尾的完整地址（远程服务需 https，本地可用 http）"
+            )
+            return
+        }
+        val model = modelInput.trim()
+        if (model.isEmpty()) {
+            _customAiApiEndpointState.value = _customAiApiEndpointState.value.copy(
+                errorMessage = "模型名不能为空"
+            )
+            return
+        }
+        val key = sanitizeApiKeyInput(apiKeyInput)
+        viewModelScope.launch(Dispatchers.IO) {
+            val presetId = settingsRepository.loadSelectedCustomAiPresetId()
+            _customAiApiEndpointState.value = _customAiApiEndpointState.value.copy(saving = true, errorMessage = null)
+            _customAiApiKeyState.value = _customAiApiKeyState.value.copy(saving = true, errorMessage = null)
+            val endpointSaved = runCatching {
+                settingsRepository.setCustomAiApiUrl(normalizedUrl)
+                settingsRepository.setCustomAiApiModel(model)
+            }.isSuccess
+            val keyAlreadyConfigured = customAiApiKeyStore.isConfigured(presetId)
+            val keySaved = when {
+                key.isEmpty() -> true // 留空 = 不修改
+                else -> runCatching { customAiApiKeyStore.save(presetId = presetId, apiKey = key) }.isSuccess
+            }
+            val endpointState = _customAiApiEndpointState.value
+            _customAiApiEndpointState.value = endpointState.copy(
+                configured = endpointSaved,
+                saving = false,
+                errorMessage = if (endpointSaved) null else "端点配置保存失败",
+                saveVersion = if (endpointSaved) endpointState.saveVersion + 1L else endpointState.saveVersion
+            )
+            val keyState = _customAiApiKeyState.value
+            _customAiApiKeyState.value = keyState.copy(
+                configured = if (key.isEmpty()) keyAlreadyConfigured else keySaved,
+                saving = false,
+                errorMessage = if (keySaved) null else "API Key 保存失败",
+                saveVersion = if (key.isEmpty() || !keySaved) keyState.saveVersion else keyState.saveVersion + 1L
+            )
         }
     }
 
@@ -654,22 +708,29 @@ class SettingsViewModel @Inject constructor(
                 apiUrl = customUrlInput.ifBlank { saved.apiUrl },
                 model = customModelInput.ifBlank { saved.model }
             )
-            val effectiveCustomKey = customKeyInput.ifBlank { customAiApiKeyStore.read(selectedPreset) }
+            val effectiveCustomKey = sanitizeApiKeyInput(
+                customKeyInput.ifBlank { customAiApiKeyStore.read(selectedPreset) }
+            )
             val config = resolveTranslationApiTestConfig(
                 customSettings = effectiveCustom,
                 customApiKey = effectiveCustomKey,
                 deepSeekApiKey = deepSeekApiKeyStore.read()
             )
-            val outcome = when (config) {
-                is TranslationApiTestConfig.NotReady ->
-                    TranslationApiTestOutcome.Failure(config.message)
-                is TranslationApiTestConfig.Endpoint -> runTranslationApiTest(
-                    okHttpClient = okHttpClient,
-                    gson = Gson(),
-                    apiUrl = config.apiUrl,
-                    apiKey = config.apiKey,
-                    model = config.model
-                )
+            val outcome = runCatching {
+                when (config) {
+                    is TranslationApiTestConfig.NotReady ->
+                        TranslationApiTestOutcome.Failure(config.message)
+                    is TranslationApiTestConfig.Endpoint -> runTranslationApiTest(
+                        okHttpClient = okHttpClient,
+                        gson = Gson(),
+                        apiUrl = config.apiUrl,
+                        apiKey = config.apiKey,
+                        model = config.model
+                    )
+                }
+            }.getOrElse { error ->
+                // 任何未预期的异常都只提示、不闪退（曾经因 Key 含换行导致 OkHttp 抛异常直接崩进程）。
+                TranslationApiTestOutcome.Failure("测试失败：${error.message ?: error.javaClass.simpleName}")
             }
             _translationApiTestState.value = when (outcome) {
                 TranslationApiTestOutcome.Success -> TranslationApiTestUiState(
